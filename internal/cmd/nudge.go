@@ -215,6 +215,9 @@ func deliverNudge(t *tmux.Tmux, sessionName, message, sender string) error {
 					Message:  message,
 					Priority: nudgePriorityFlag,
 				}); qErr != nil {
+					if session.IsHumanFacingSession(sessionName) {
+						return fmt.Errorf("queue fallback failed for human-facing session %q; refusing direct delivery: %w", sessionName, qErr)
+					}
 					formatted := nudge.FormatForInjection([]nudge.QueuedNudge{{
 						Sender:   sender,
 						Message:  message,
@@ -233,8 +236,9 @@ func deliverNudge(t *tmux.Tmux, sessionName, message, sender string) error {
 				return nil
 			}
 		}
-		// Try to wait for idle
-		err := t.WaitForIdle(sessionName, waitIdleTimeout)
+		// Try to wait for idle. Human-facing sessions also require an empty
+		// input box; prompt-visible alone is unsafe while the human is typing.
+		err := t.WaitForIdleWithOpts(sessionName, waitIdleTimeout, nudgeWaitOpts(sessionName))
 		if err == nil {
 			// Agent is idle — deliver directly. Format as system-reminder
 			// so the agent processes it as a background notification rather
@@ -257,6 +261,9 @@ func deliverNudge(t *tmux.Tmux, sessionName, message, sender string) error {
 			Message:  message,
 			Priority: nudgePriorityFlag,
 		}); qErr != nil {
+			if session.IsHumanFacingSession(sessionName) {
+				return fmt.Errorf("queue fallback failed for human-facing session %q; refusing direct delivery: %w", sessionName, qErr)
+			}
 			// Queue failed — fall back to immediate as last resort.
 			// Better to interrupt than lose the message entirely.
 			fmt.Fprintf(os.Stderr, "Warning: queue fallback failed (%v), delivering immediately\n", qErr)
@@ -292,6 +299,10 @@ func deliverNudge(t *tmux.Tmux, sessionName, message, sender string) error {
 	}
 }
 
+func nudgeWaitOpts(sessionName string) tmux.WaitForIdleOpts {
+	return tmux.WaitForIdleOpts{RequireEmptyInput: session.IsHumanFacingSession(sessionName)}
+}
+
 // watchAndDeliver polls a session for idle state over idleWatcherTimeout.
 // When the agent becomes idle, it drains the nudge queue and sends the
 // formatted content directly via NudgeSession. This bypasses the
@@ -323,11 +334,11 @@ func watchAndDeliver(t *tmux.Tmux, townRoot, sessionName string) {
 			return
 		}
 
-		// Use WaitForIdle with a short timeout instead of single-snapshot
+		// Use WaitForIdleWithOpts with a short timeout instead of single-snapshot
 		// IsIdle to get the consecutive-poll guard (2 polls 200ms apart).
 		// This avoids false positives during inter-tool-call gaps where
 		// the prompt briefly appears while Claude Code is still working.
-		if err := t.WaitForIdle(sessionName, idleWatcherPollInterval); err == nil {
+		if err := t.WaitForIdleWithOpts(sessionName, idleWatcherPollInterval, nudgeWaitOpts(sessionName)); err == nil {
 			// Drain atomically claims queued entries (rename-based).
 			// If another process raced and drained first, we get an
 			// empty slice and skip delivery to avoid duplicates.
