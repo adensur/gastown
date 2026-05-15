@@ -304,6 +304,15 @@ func TestDeaconPatrolHasHeartbeatSteps(t *testing.T) {
 			if !strings.Contains(step.Description, "gt deacon stop") {
 				t.Error("exit-after-cycle step must terminate the session via \"gt deacon stop\"")
 			}
+			// The kill must be backgrounded via nohup so the bash subprocess
+			// returns before the session dies — otherwise Claude sees the
+			// tool call as "Interrupted" and never exits cleanly. See gt-097
+			// (the follow-up after PR #4): three consecutive deacons hit this
+			// after the cron-spawn rollout because they called `gt deacon stop`
+			// synchronously.
+			if !strings.Contains(step.Description, "nohup") {
+				t.Error("exit-after-cycle step must schedule the kill via `nohup ... &` so bash returns before the session dies (gt-097)")
+			}
 		}
 	}
 	if !foundMid {
