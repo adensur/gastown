@@ -8,6 +8,7 @@ import (
 
 	"github.com/steveyegge/gastown/internal/nudge"
 	"github.com/steveyegge/gastown/internal/session"
+	"github.com/steveyegge/gastown/internal/tmux"
 )
 
 func setupNudgeTestRegistry(t *testing.T) {
@@ -226,9 +227,9 @@ func TestNudgeInvalidMode(t *testing.T) {
 	nudgeMessageFlag = "test"
 
 	tests := []struct {
-		name     string
-		mode     string
-		wantErr  string
+		name    string
+		mode    string
+		wantErr string
 	}{
 		{"bogus mode", "bogus", `invalid --mode "bogus"`},
 		{"empty mode", "", `invalid --mode ""`},
@@ -326,6 +327,38 @@ func TestNudgeValidModesAccepted(t *testing.T) {
 				t.Errorf("valid mode %q was rejected: %v", mode, err)
 			}
 		})
+	}
+}
+
+func TestNudgeWaitOptsRequireEmptyInputForHumanFacingSessions(t *testing.T) {
+	tests := []struct {
+		sessionName      string
+		wantRequireEmpty bool
+	}{
+		{"hq-mayor", true},
+		{"gt-mayor", true},
+		{"hq-deacon", false},
+		{"gt-crew-Dementus", false},
+		{"gt-witness", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.sessionName, func(t *testing.T) {
+			got := nudgeWaitOpts(tt.sessionName)
+			if got.RequireEmptyInput != tt.wantRequireEmpty {
+				t.Errorf("nudgeWaitOpts(%q).RequireEmptyInput = %v, want %v",
+					tt.sessionName, got.RequireEmptyInput, tt.wantRequireEmpty)
+			}
+		})
+	}
+}
+
+func TestPollerSkipsDrainOnHumanFacingIdleTimeout(t *testing.T) {
+	if !shouldSkipDrainUntilIdle(true, tmux.ErrIdleTimeout) {
+		t.Fatal("poller should skip drain when human-facing strict idle wait times out")
+	}
+	if shouldSkipDrainUntilIdle(false, tmux.ErrIdleTimeout) {
+		t.Fatal("poller should preserve promptless agent best-effort drain behavior")
 	}
 }
 
