@@ -746,7 +746,12 @@ func (m *Manager) Start(name string, opts StartOptions) error {
 	// IMPORTANT: All validation and command building happens BEFORE killing
 	// any existing session, so a validation failure cannot leave the user
 	// without a running session.
+	//
+	// bootstrap is the beacon + delayed-nudge content for fresh-spawn mode.
+	// nil in resume mode (the resumed session already has context, no fallback
+	// nudge needed).
 	var claudeCmd string
+	var bootstrap *StartupBootstrap
 	if opts.ResumeSessionID != "" {
 		// Validate session ID to prevent shell injection. The ID is interpolated
 		// into a shell command string, so reject anything with metacharacters.
@@ -779,26 +784,23 @@ func (m *Manager) Start(name string, opts StartOptions) error {
 		claudeCmd += " " + resumeArgs
 	} else {
 		// Normal start: build beacon for predecessor discovery via /resume.
-		// Only used in fresh-start mode — resumed sessions already have context.
-		address := session.BeaconRecipient("crew", name, m.rig.Name)
+		// For non-hook agents (codex, auggie, amp) the bootstrap also carries a
+		// "Run gt prime" instruction in the beacon and a delayed work-instructions
+		// nudge — same shape polecat already uses (gt-biy).
 		topic := opts.Topic
 		if topic == "" {
 			topic = "start"
 		}
-		beacon := session.FormatStartupBeacon(session.BeaconConfig{
-			Recipient: address,
-			Sender:    "human",
-			Topic:     topic,
-		})
+		bootstrap = BuildStartupBootstrap(m.rig.Name, name, topic, runtimeConfig)
 		claudeCmd, err = config.BuildStartupCommandFromConfig(config.AgentEnvConfig{
 			Role:        "crew",
 			Rig:         m.rig.Name,
 			AgentName:   name,
 			TownRoot:    townRoot,
-			Prompt:      beacon,
+			Prompt:      bootstrap.Beacon,
 			Topic:       topic,
 			SessionName: m.SessionName(name),
-		}, m.rig.Path, beacon, opts.AgentOverride)
+		}, m.rig.Path, bootstrap.Beacon, opts.AgentOverride)
 		if err != nil {
 			return fmt.Errorf("building startup command: %w", err)
 		}
@@ -891,6 +893,14 @@ func (m *Manager) Start(name string, opts StartOptions) error {
 			style.PrintWarning("timeout waiting for agent to start: %v", err)
 		}
 		_ = t.AcceptStartupDialogs(sessionID)
+
+		// Deliver bootstrap fallbacks for non-hook agents (codex, auggie, amp):
+		// wait for gt prime to settle, then nudge work instructions. No-op for
+		// hook+prompt agents like Claude (gt-biy). Resume mode skips this — the
+		// resumed session already has full context.
+		if bootstrap != nil {
+			DeliverStartupFallbacks(t, sessionID, bootstrap, runtimeConfig, constants.ClaudeStartTimeout)
+		}
 
 		// Start background nudge-queue poller for ALL agents (gt-dgf).
 		// Claude drains its queue via UserPromptSubmit hook, but that hook only
