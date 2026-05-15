@@ -72,7 +72,7 @@ When `await-signal` outputs `EFFORT: full`, run all steps thoroughly (normal mod
 
 The goal: idle cycles should burn ~10% of the tokens a full patrol uses."""
 formula = "mol-deacon-patrol"
-version = 15
+version = 16
 
 [vars]
 [vars.wisp_type]
@@ -1196,15 +1196,29 @@ Steps you executed get OK, steps you skipped get SKIP. This closes the
 current patrol wisp and automatically creates the next one (which the
 next Deacon spawn will pick up via `gt hook`).
 
-**Step 3: Exit this session**
+**Step 3: Schedule a deferred self-exit, then stop**
 
 ```bash
-gt deacon stop
+nohup bash -c 'sleep 2 && gt deacon stop' >/dev/null 2>&1 &
 ```
 
-This kills this Deacon's tmux session. Within ~3 minutes the daemon's
-recovery heartbeat will run `ensureDeaconRunning` and spawn a fresh
-Deacon for cycle N+1, picking up the new patrol wisp from the hook.
+**Important — do NOT run `gt deacon stop` directly.** That command kills
+this Deacon's own tmux session, which kills the bash subprocess that's
+*executing the kill*, and Claude sees the tool call as "Interrupted"
+rather than "completed." The agent then drifts into idle instead of
+exiting, defeating the cron-spawn cadence (observed three times after
+PR #4 — same gt-097 hang via a new path).
+
+The `nohup ... &` form runs the kill in a detached background shell, so
+the bash tool call returns IMMEDIATELY (the agent sees a clean exit
+status) and the session dies ~2 seconds later. Within ~3 minutes the
+daemon's recovery heartbeat will run `ensureDeaconRunning` and spawn a
+fresh Deacon for cycle N+1, picking up the new patrol wisp from the
+hook.
+
+After scheduling the deferred kill, you can output a one-line
+"patrol-cycle-complete" message — anything you say after will be cut
+off when the kill fires.
 
 **Do NOT** call `gt mol step await-signal`. Do NOT continue to a second
 cycle's first step in this session. Do NOT `gt handoff` (that's for
