@@ -133,6 +133,9 @@ func TestSlingFormulaOnBeadRoutesBDCommandsToTargetRig(t *testing.T) {
 	if err := os.MkdirAll(rigDir, 0755); err != nil {
 		t.Fatalf("mkdir rigDir: %v", err)
 	}
+	if err := os.MkdirAll(filepath.Join(rigDir, ".beads"), 0755); err != nil {
+		t.Fatalf("mkdir rig .beads: %v", err)
+	}
 	routes := strings.Join([]string{
 		`{"prefix":"gt-","path":"gastown/mayor/rig"}`,
 		`{"prefix":"hq-","path":"."}`,
