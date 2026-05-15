@@ -726,6 +726,7 @@ func runSling(cmd *cobra.Command, args []string) (retErr error) {
 	hookWorkDir := resolved.WorkDir
 	hookSetAtomically := resolved.HookSetAtomically
 	delayedDogInfo := resolved.DelayedDogInfo
+	delayedCrewInfo := resolved.DelayedCrewInfo
 	newPolecatInfo := resolved.NewPolecatInfo
 	isSelfSling := resolved.IsSelfSling
 
@@ -901,156 +902,188 @@ func runSling(cmd *cobra.Command, args []string) (retErr error) {
 		return nil
 	}
 
-	// Formula-on-bead mode: instantiate formula and bond to original bead
-	if formulaName != "" {
-		fmt.Printf("  Instantiating formula %s...\n", formulaName)
+	attachWork := func() error {
+		// Formula-on-bead mode: instantiate formula and bond to original bead
+		if formulaName != "" {
+			fmt.Printf("  Instantiating formula %s...\n", formulaName)
 
-		// Auto-inject rig command vars as defaults (user --var flags override)
-		if parts := strings.SplitN(targetAgent, "/", 2); len(parts) >= 1 && parts[0] != "" {
-			rigCmdVars := loadRigCommandVars(townRoot, parts[0])
-			slingVars = append(rigCmdVars, slingVars...)
+			// Auto-inject rig command vars as defaults (user --var flags override)
+			if parts := strings.SplitN(targetAgent, "/", 2); len(parts) >= 1 && parts[0] != "" {
+				rigCmdVars := loadRigCommandVars(townRoot, parts[0])
+				slingVars = append(rigCmdVars, slingVars...)
+			}
+
+			result, err := InstantiateFormulaOnBead(ctx, formulaName, beadID, info.Title, hookWorkDir, townRoot, false, slingVars)
+			if err != nil {
+				// If we spawned a fresh polecat (rig target), rollback the partial artifacts.
+				// Otherwise, a wisp creation failure (e.g., missing required vars) leaves an orphaned polecat.
+				if newPolecatInfo != nil {
+					fmt.Printf("%s Formula instantiation failed, rolling back spawned polecat %s...\n",
+						style.Warning.Render("⚠"), newPolecatInfo.PolecatName)
+					rollbackSlingArtifactsFn(newPolecatInfo, beadID, hookWorkDir, "")
+					// Under --force, if this bead was previously pinned, rollback's unhook would otherwise
+					// clear the pinned state. Restore pinned state so we don't lose the original hook.
+					if force && originalStatus == "pinned" {
+						restorePinnedBead(townRoot, beadID, originalAssignee)
+					}
+				}
+				return fmt.Errorf("instantiating formula %s: %w", formulaName, err)
+			}
+
+			fmt.Printf("%s Formula wisp created: %s\n", style.Bold.Render("✓"), result.WispRootID)
+			fmt.Printf("%s Formula bonded to %s\n", style.Bold.Render("✓"), beadID)
+
+			// Record attached molecule - will be stored in BASE bead (not wisp).
+			// The base bead is hooked, and its attached_molecule points to the wisp.
+			// This enables:
+			// - gt hook/gt prime: read base bead, follow attached_molecule to show wisp steps
+			// - gt done: close attached_molecule (wisp) first, then close base bead
+			// - Compound resolution: base bead -> attached_molecule -> wisp
+			attachedMoleculeID = result.WispRootID
+
+			// NOTE: We intentionally keep beadID as the ORIGINAL base bead, not the wisp.
+			// The base bead is hooked so that:
+			// 1. gt done closes both the base bead AND the attached molecule (wisp)
+			// 2. The base bead's attached_molecule field points to the wisp for compound resolution
+			// Previously, this line incorrectly set beadID = wispRootID, causing:
+			// - Wisp hooked instead of base bead
+			// - attached_molecule stored as self-reference in wisp (meaningless)
+			// - Base bead left orphaned after gt done
 		}
 
-		result, err := InstantiateFormulaOnBead(ctx, formulaName, beadID, info.Title, hookWorkDir, townRoot, false, slingVars)
+		// Hook the bead with retry and verification.
+		// See: https://github.com/steveyegge/gastown/issues/148
+		//
+		// Acquire a per-assignee lock before writing hook_bead to serialize concurrent slings
+		// targeting the same assignee. Without this, multiple concurrent slings race on the
+		// same assignee's row in Dolt, causing silent rollbacks (issue #3114).
+		assigneeUnlock, assigneeLockErr := tryAcquireSlingAssigneeLock(townRoot, targetAgent)
+		if assigneeLockErr != nil {
+			return fmt.Errorf("serializing hook write for %s: %w", targetAgent, assigneeLockErr)
+		}
+		defer assigneeUnlock()
+		hookDir := beads.ResolveHookDir(townRoot, beadID, hookWorkDir)
+		if err := hookBeadWithRetry(beadID, targetAgent, hookDir); err != nil {
+			return err
+		}
+
+		// Emit a propulsion signal if the target is the mayor.
+		// This allows the ACP propeller to react to hook changes event-driven.
+		if targetAgent == "mayor/" {
+			if townRoot, err := workspace.FindFromCwd(); err == nil && townRoot != "" {
+				session := "hq-mayor"
+				message := fmt.Sprintf("Hook updated: attached bead %s", beadID)
+				_ = nudge.Enqueue(townRoot, session, nudge.QueuedNudge{
+					Sender:   "sling",
+					Message:  message,
+					Priority: nudge.PriorityNormal,
+				})
+			}
+		}
+
+		fmt.Printf("%s Work attached to hook (status=hooked)\n", style.Bold.Render("✓"))
+
+		// Log sling event to activity feed
+		actor := detectActor()
+		_ = events.LogFeed(events.TypeSling, actor, events.SlingPayload(beadID, targetAgent))
+
+		// Update agent bead's hook_bead field (ZFC: agents track their current work)
+		// Skip if hook was already set atomically during polecat spawn - avoids "agent bead not found"
+		// error when polecat redirect setup fails (GH #gt-mzyk5: agent bead created in rig beads
+		// but updateAgentHookBead looks in polecat's local beads if redirect is missing).
+		if !hookSetAtomically {
+			updateAgentHookBead(targetAgent, beadID, hookWorkDir, townBeadsDir)
+		}
+
+		// Store all attachment fields in a single read-modify-write cycle.
+		// This eliminates the race condition where sequential independent updates
+		// (dispatcher, args, no_merge, attached_molecule) could overwrite each other.
+		fieldUpdates := buildSlingFieldUpdates(
+			actor,
+			slingArgs,
+			append([]string(nil), slingVars...),
+			attachedMoleculeID,
+			formulaName,
+			slingNoMerge,
+			slingReviewOnly,
+			strings.Join(slingVars, "\n"),
+			convoyID,
+			slingMerge,
+			slingOwned,
+		)
+		if err := storeFieldsInBead(beadID, fieldUpdates); err != nil {
+			// Warn but don't fail - polecat will still complete work
+			fmt.Printf("%s Could not store fields in bead: %v\n", style.Dim.Render("Warning:"), err)
+		} else {
+			if slingArgs != "" {
+				fmt.Printf("%s Args stored in bead (durable)\n", style.Bold.Render("✓"))
+			}
+			if slingNoMerge {
+				fmt.Printf("%s No-merge mode enabled (work stays on feature branch)\n", style.Bold.Render("✓"))
+			}
+			if slingReviewOnly {
+				fmt.Printf("%s Review-only mode: assignee must evaluate and report back, NOT merge/commit/push\n", style.Bold.Render("⚠"))
+			}
+		}
+
+		return nil
+	}
+
+	freshlySpawned := false
+	if delayedCrewInfo != nil {
+		attachedBeforeCrewStart := false
+		pane, err := delayedCrewInfo.StartAfterHook(func() error {
+			if err := attachWork(); err != nil {
+				return err
+			}
+			attachedBeforeCrewStart = true
+			return nil
+		})
 		if err != nil {
-			// If we spawned a fresh polecat (rig target), rollback the partial artifacts.
-			// Otherwise, a wisp creation failure (e.g., missing required vars) leaves an orphaned polecat.
-			if newPolecatInfo != nil {
-				fmt.Printf("%s Formula instantiation failed, rolling back spawned polecat %s...\n",
-					style.Warning.Render("⚠"), newPolecatInfo.PolecatName)
-				rollbackSlingArtifactsFn(newPolecatInfo, beadID, hookWorkDir, "")
-				// Under --force, if this bead was previously pinned, rollback's unhook would otherwise
-				// clear the pinned state. Restore pinned state so we don't lose the original hook.
+			if attachedBeforeCrewStart {
+				fmt.Printf("%s Session failed, rolling back crew hook for %s...\n", style.Warning.Render("⚠"), delayedCrewInfo.CrewName)
+				rollbackDelayedCrewHook(beadID, hookWorkDir)
 				if force && originalStatus == "pinned" {
 					restorePinnedBead(townRoot, beadID, originalAssignee)
 				}
 			}
-			return fmt.Errorf("instantiating formula %s: %w", formulaName, err)
+			return fmt.Errorf("starting delayed crew session: %w", err)
 		}
-
-		fmt.Printf("%s Formula wisp created: %s\n", style.Bold.Render("✓"), result.WispRootID)
-		fmt.Printf("%s Formula bonded to %s\n", style.Bold.Render("✓"), beadID)
-
-		// Record attached molecule - will be stored in BASE bead (not wisp).
-		// The base bead is hooked, and its attached_molecule points to the wisp.
-		// This enables:
-		// - gt hook/gt prime: read base bead, follow attached_molecule to show wisp steps
-		// - gt done: close attached_molecule (wisp) first, then close base bead
-		// - Compound resolution: base bead -> attached_molecule -> wisp
-		attachedMoleculeID = result.WispRootID
-
-		// NOTE: We intentionally keep beadID as the ORIGINAL base bead, not the wisp.
-		// The base bead is hooked so that:
-		// 1. gt done closes both the base bead AND the attached molecule (wisp)
-		// 2. The base bead's attached_molecule field points to the wisp for compound resolution
-		// Previously, this line incorrectly set beadID = wispRootID, causing:
-		// - Wisp hooked instead of base bead
-		// - attached_molecule stored as self-reference in wisp (meaningless)
-		// - Base bead left orphaned after gt done
-	}
-
-	// Hook the bead with retry and verification.
-	// See: https://github.com/steveyegge/gastown/issues/148
-	//
-	// Acquire a per-assignee lock before writing hook_bead to serialize concurrent slings
-	// targeting the same polecat. Without this, multiple concurrent slings race on the
-	// same assignee's row in Dolt, causing silent rollbacks (issue #3114).
-	assigneeUnlock, assigneeLockErr := tryAcquireSlingAssigneeLock(townRoot, targetAgent)
-	if assigneeLockErr != nil {
-		return fmt.Errorf("serializing hook write for %s: %w", targetAgent, assigneeLockErr)
-	}
-	defer assigneeUnlock()
-	hookDir := beads.ResolveHookDir(townRoot, beadID, hookWorkDir)
-	if err := hookBeadWithRetry(beadID, targetAgent, hookDir); err != nil {
-		return err
-	}
-
-	// Emit a propulsion signal if the target is the mayor.
-	// This allows the ACP propeller to react to hook changes event-driven.
-	if targetAgent == "mayor/" {
-		if townRoot, err := workspace.FindFromCwd(); err == nil && townRoot != "" {
-			session := "hq-mayor"
-			message := fmt.Sprintf("Hook updated: attached bead %s", beadID)
-			_ = nudge.Enqueue(townRoot, session, nudge.QueuedNudge{
-				Sender:   "sling",
-				Message:  message,
-				Priority: nudge.PriorityNormal,
-			})
-		}
-	}
-
-	fmt.Printf("%s Work attached to hook (status=hooked)\n", style.Bold.Render("✓"))
-
-	// Log sling event to activity feed
-	actor := detectActor()
-	_ = events.LogFeed(events.TypeSling, actor, events.SlingPayload(beadID, targetAgent))
-
-	// Update agent bead's hook_bead field (ZFC: agents track their current work)
-	// Skip if hook was already set atomically during polecat spawn - avoids "agent bead not found"
-	// error when polecat redirect setup fails (GH #gt-mzyk5: agent bead created in rig beads
-	// but updateAgentHookBead looks in polecat's local beads if redirect is missing).
-	if !hookSetAtomically {
-		updateAgentHookBead(targetAgent, beadID, hookWorkDir, townBeadsDir)
-	}
-
-	// Store all attachment fields in a single read-modify-write cycle.
-	// This eliminates the race condition where sequential independent updates
-	// (dispatcher, args, no_merge, attached_molecule) could overwrite each other.
-	fieldUpdates := buildSlingFieldUpdates(
-		actor,
-		slingArgs,
-		append([]string(nil), slingVars...),
-		attachedMoleculeID,
-		formulaName,
-		slingNoMerge,
-		slingReviewOnly,
-		strings.Join(slingVars, "\n"),
-		convoyID,
-		slingMerge,
-		slingOwned,
-	)
-	if err := storeFieldsInBead(beadID, fieldUpdates); err != nil {
-		// Warn but don't fail - polecat will still complete work
-		fmt.Printf("%s Could not store fields in bead: %v\n", style.Dim.Render("Warning:"), err)
+		targetPane = pane
+		freshlySpawned = true
 	} else {
-		if slingArgs != "" {
-			fmt.Printf("%s Args stored in bead (durable)\n", style.Bold.Render("✓"))
+		if err := attachWork(); err != nil {
+			return err
 		}
-		if slingNoMerge {
-			fmt.Printf("%s No-merge mode enabled (work stays on feature branch)\n", style.Bold.Render("✓"))
-		}
-		if slingReviewOnly {
-			fmt.Printf("%s Review-only mode: assignee must evaluate and report back, NOT merge/commit/push\n", style.Bold.Render("⚠"))
-		}
-	}
 
-	// Start delayed dog session now that hook is set
-	// This ensures dog sees the hook when gt prime runs on session start
-	if delayedDogInfo != nil {
-		pane, err := delayedDogInfo.StartDelayedSession()
-		if err != nil {
-			return fmt.Errorf("starting delayed dog session: %w", err)
+		// Start delayed dog session now that hook is set
+		// This ensures dog sees the hook when gt prime runs on session start
+		if delayedDogInfo != nil {
+			pane, err := delayedDogInfo.StartDelayedSession()
+			if err != nil {
+				return fmt.Errorf("starting delayed dog session: %w", err)
+			}
+			targetPane = pane
 		}
-		targetPane = pane
-	}
 
-	// Start polecat session now that attached_molecule is set.
-	// This ensures polecat sees the molecule when gt prime runs on session start.
-	freshlySpawned := newPolecatInfo != nil
-	if freshlySpawned {
-		pane, err := newPolecatInfo.StartSession()
-		if err != nil {
-			// Rollback: session failed, clean up zombie artifacts (worktree, hooked bead).
-			// Without rollback, next sling attempt fails with "bead already hooked" (gt-jn40ft).
-			fmt.Printf("%s Session failed, rolling back spawned polecat %s...\n", style.Warning.Render("⚠"), newPolecatInfo.PolecatName)
-			rollbackSlingArtifactsFn(newPolecatInfo, beadID, hookWorkDir, "")
-			return fmt.Errorf("starting polecat session: %w", err)
+		// Start polecat session now that attached_molecule is set.
+		// This ensures polecat sees the molecule when gt prime runs on session start.
+		freshlySpawned = newPolecatInfo != nil
+		if freshlySpawned {
+			pane, err := newPolecatInfo.StartSession()
+			if err != nil {
+				// Rollback: session failed, clean up zombie artifacts (worktree, hooked bead).
+				// Without rollback, next sling attempt fails with "bead already hooked" (gt-jn40ft).
+				fmt.Printf("%s Session failed, rolling back spawned polecat %s...\n", style.Warning.Render("⚠"), newPolecatInfo.PolecatName)
+				rollbackSlingArtifactsFn(newPolecatInfo, beadID, hookWorkDir, "")
+				return fmt.Errorf("starting polecat session: %w", err)
+			}
+			targetPane = pane
 		}
-		targetPane = pane
 	}
 
 	// Try to inject the "start now" prompt (graceful if no tmux)
-	// Skip for freshly spawned polecats - SessionManager.Start() already sent StartupNudge.
+	// Skip for freshly spawned agents - startup prompt already points them at gt hook.
 	// Skip for self-sling - agent is currently processing the sling command and will see
 	// the hooked work on next turn. Nudging would inject text while agent is busy.
 	if freshlySpawned {

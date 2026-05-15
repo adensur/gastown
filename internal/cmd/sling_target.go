@@ -136,13 +136,14 @@ type ResolvedTarget struct {
 	WorkDir           string
 	HookSetAtomically bool
 	DelayedDogInfo    *DogDispatchInfo
+	DelayedCrewInfo   *DelayedCrewInfo
 	NewPolecatInfo    *SpawnedPolecatInfo
 	IsSelfSling       bool
 }
 
 // resolveTarget resolves a target specification to agent, pane, and working directory.
 // Handles: "." or empty (self), dog targets, rig targets (auto-spawn polecat),
-// existing agents (with dead polecat fallback).
+// existing agents, inactive crew targets, and dead polecat fallback.
 func resolveTarget(target string, opts ResolveTargetOptions) (*ResolvedTarget, error) {
 	result := &ResolvedTarget{}
 
@@ -257,6 +258,9 @@ func resolveTarget(target string, opts ResolveTargetOptions) (*ResolvedTarget, e
 	// resolve here, getting their pane for nudge delivery (gt-in7b).
 	agentID, pane, workDir, err := resolveTargetAgentFn(target)
 	if err != nil {
+		if delayedCrew, handled, crewErr := resolveDelayedCrewTarget(target, opts); handled {
+			return delayedCrew, crewErr
+		}
 		if isPolecatTarget(target) {
 			parts := strings.Split(target, "/")
 			if len(parts) >= 3 && parts[1] == "polecats" {

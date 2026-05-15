@@ -62,6 +62,10 @@ type StartOptions struct {
 	// "last" means resume the most recent session (--resume with no session ID).
 	// Any other non-empty value is a specific session ID to resume.
 	ResumeSessionID string
+
+	// BeforeStart runs while the crew lock is held after startup validation and
+	// existing-session checks, but before the tmux session is created.
+	BeforeStart func(worker *CrewWorker) error
 }
 
 // validateSessionID checks that a resume session ID contains only safe characters.
@@ -826,6 +830,12 @@ func (m *Manager) Start(name string, opts StartOptions) error {
 			if err := t.KillSessionWithProcesses(sessionID); err != nil {
 				return fmt.Errorf("killing zombie session: %w", err)
 			}
+		}
+	}
+
+	if opts.BeforeStart != nil {
+		if err := opts.BeforeStart(worker); err != nil {
+			return fmt.Errorf("before starting crew session: %w", err)
 		}
 	}
 

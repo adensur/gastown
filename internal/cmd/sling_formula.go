@@ -136,6 +136,7 @@ func runSlingFormula(ctx context.Context, args []string) error {
 	targetPane := resolved.Pane
 	formulaWorkDir := resolved.WorkDir
 	delayedDogInfo := resolved.DelayedDogInfo
+	delayedCrewInfo := resolved.DelayedCrewInfo
 	isSelfSling := resolved.IsSelfSling
 
 	fmt.Printf("%s Slinging formula %s to %s...\n", style.Bold.Render("🎯"), formulaName, targetAgent)
@@ -173,124 +174,153 @@ func runSlingFormula(ctx context.Context, args []string) error {
 		return nil
 	}
 
-	// Serialize standalone formula slings per assignee so same-formula retries
-	// and handoffs cannot create duplicate hooked wisps for one target.
-	assigneeUnlock, assigneeLockErr := tryAcquireSlingAssigneeLock(townRoot, targetAgent)
-	if assigneeLockErr != nil {
-		return fmt.Errorf("serializing formula sling for %s: %w", targetAgent, assigneeLockErr)
-	}
-	defer assigneeUnlock()
+	var wispRootID string
+	hookWritten := false
+	attachFormula := func() error {
+		// Serialize standalone formula slings per assignee so same-formula retries
+		// and handoffs cannot create duplicate hooked wisps for one target.
+		assigneeUnlock, assigneeLockErr := tryAcquireSlingAssigneeLock(townRoot, targetAgent)
+		if assigneeLockErr != nil {
+			return fmt.Errorf("serializing formula sling for %s: %w", targetAgent, assigneeLockErr)
+		}
+		defer assigneeUnlock()
 
-	existing, err := findHookedFormulaSingletonFn(formulaWorkDir, targetAgent, formulaName)
-	if err != nil {
-		return fmt.Errorf("checking existing hooked formulas for %s: %w", targetAgent, err)
-	}
-	if existing != nil && !slingForce {
-		fmt.Printf("%s Formula %s already hooked to %s via %s, no-op\n",
-			style.Dim.Render("○"), formulaName, targetAgent, existing.ID)
+		existing, err := findHookedFormulaSingletonFn(formulaWorkDir, targetAgent, formulaName)
+		if err != nil {
+			return fmt.Errorf("checking existing hooked formulas for %s: %w", targetAgent, err)
+		}
+		if existing != nil && !slingForce {
+			fmt.Printf("%s Formula %s already hooked to %s via %s, no-op\n",
+				style.Dim.Render("○"), formulaName, targetAgent, existing.ID)
+			wispRootID = existing.ID
+			return nil
+		}
+
+		// Step 1: Cook the formula (ensures proto exists)
+		fmt.Printf("  Cooking formula...\n")
+		if err := BdCmd("cook", formulaName).
+			Dir(formulaWorkDir).
+			WithGTRoot(townRoot).
+			Run(); err != nil {
+			telemetry.RecordMolCook(ctx, formulaName, err)
+			rollbackSpawned("")
+			return fmt.Errorf("cooking formula: %w", err)
+		}
+		telemetry.RecordMolCook(ctx, formulaName, nil)
+
+		// Step 2: Create wisp instance (ephemeral)
+		fmt.Printf("  Creating wisp...\n")
+		wispArgs := []string{"mol", "wisp", formulaName}
+		for _, v := range slingVars {
+			wispArgs = append(wispArgs, "--var", v)
+		}
+		wispArgs = append(wispArgs, "--json")
+
+		wispOut, err := BdCmd(wispArgs...).
+			Dir(formulaWorkDir).
+			WithAutoCommit().
+			WithGTRoot(townRoot).
+			Output()
+		if err != nil {
+			rollbackSpawned("")
+			return fmt.Errorf("creating wisp: %w", err)
+		}
+
+		// Parse wisp output to get the root ID
+		wispRootID, err = parseWispIDFromJSON(wispOut)
+		if err != nil {
+			telemetry.RecordMolWisp(ctx, formulaName, "", "", err)
+			rollbackSpawned("")
+			return fmt.Errorf("parsing wisp output: %w", err)
+		}
+		telemetry.RecordMolWisp(ctx, formulaName, wispRootID, "", nil)
+
+		fmt.Printf("%s Wisp created: %s\n", style.Bold.Render("✓"), wispRootID)
+
+		// Step 3: Hook the wisp bead with retry and verification.
+		// See: https://github.com/steveyegge/gastown/issues/148.
+		hookDir := beads.ResolveHookDir(townRoot, wispRootID, "")
+		if err := hookBeadWithRetry(wispRootID, targetAgent, hookDir); err != nil {
+			return err
+		}
+		hookWritten = true
+		fmt.Printf("%s Attached to hook (status=hooked)\n", style.Bold.Render("✓"))
+
+		// Log sling event to activity feed (formula slinging)
+		actor := detectActor()
+		payload := events.SlingPayload(wispRootID, targetAgent)
+		payload["formula"] = formulaName
+		_ = events.LogFeed(events.TypeSling, actor, payload)
+
+		// Update agent bead's hook_bead field (ZFC: agents track their current work)
+		// Note: formula slinging uses town root as workDir (no polecat-specific path)
+		updateAgentHookBead(targetAgent, wispRootID, "", townBeadsDir)
+
+		// Store all attachment fields in a single read-modify-write cycle.
+		// NOTE: For standalone formula sling, the wisp IS the work - do NOT store
+		// attached_molecule as a self-reference (the wisp's own ID pointing to itself
+		// is meaningless). attached_molecule is only meaningful when a formula-on-bead
+		// creates a wisp that's bonded to a separate base bead.
+		fieldUpdates := beadFieldUpdates{
+			Dispatcher:      actor,
+			Args:            slingArgs,
+			Vars:            append([]string(nil), slingVars...),
+			AttachedFormula: formulaName,
+			FormulaVars:     strings.Join(slingVars, "\n"),
+		}
+		if err := storeFieldsInBead(wispRootID, fieldUpdates); err != nil {
+			fmt.Printf("%s Could not store fields in bead: %v\n", style.Dim.Render("Warning:"), err)
+		} else if slingArgs != "" {
+			fmt.Printf("%s Args stored in bead (durable)\n", style.Bold.Render("✓"))
+		}
+
 		return nil
 	}
 
-	// Step 1: Cook the formula (ensures proto exists)
-	fmt.Printf("  Cooking formula...\n")
-	if err := BdCmd("cook", formulaName).
-		Dir(formulaWorkDir).
-		WithGTRoot(townRoot).
-		Run(); err != nil {
-		telemetry.RecordMolCook(ctx, formulaName, err)
-		rollbackSpawned("")
-		return fmt.Errorf("cooking formula: %w", err)
-	}
-	telemetry.RecordMolCook(ctx, formulaName, nil)
-
-	// Step 2: Create wisp instance (ephemeral)
-	fmt.Printf("  Creating wisp...\n")
-	wispArgs := []string{"mol", "wisp", formulaName}
-	for _, v := range slingVars {
-		wispArgs = append(wispArgs, "--var", v)
-	}
-	wispArgs = append(wispArgs, "--json")
-
-	wispOut, err := BdCmd(wispArgs...).
-		Dir(formulaWorkDir).
-		WithAutoCommit().
-		WithGTRoot(townRoot).
-		Output()
-	if err != nil {
-		rollbackSpawned("")
-		return fmt.Errorf("creating wisp: %w", err)
-	}
-
-	// Parse wisp output to get the root ID
-	wispRootID, err := parseWispIDFromJSON(wispOut)
-	if err != nil {
-		telemetry.RecordMolWisp(ctx, formulaName, "", "", err)
-		rollbackSpawned("")
-		return fmt.Errorf("parsing wisp output: %w", err)
-	}
-	telemetry.RecordMolWisp(ctx, formulaName, wispRootID, "", nil)
-
-	fmt.Printf("%s Wisp created: %s\n", style.Bold.Render("✓"), wispRootID)
-
-	// Step 3: Hook the wisp bead with retry and verification.
-	// See: https://github.com/steveyegge/gastown/issues/148.
-	hookDir := beads.ResolveHookDir(townRoot, wispRootID, "")
-	if err := hookBeadWithRetry(wispRootID, targetAgent, hookDir); err != nil {
-		return err
-	}
-	fmt.Printf("%s Attached to hook (status=hooked)\n", style.Bold.Render("✓"))
-
-	// Log sling event to activity feed (formula slinging)
-	actor := detectActor()
-	payload := events.SlingPayload(wispRootID, targetAgent)
-	payload["formula"] = formulaName
-	_ = events.LogFeed(events.TypeSling, actor, payload)
-
-	// Update agent bead's hook_bead field (ZFC: agents track their current work)
-	// Note: formula slinging uses town root as workDir (no polecat-specific path)
-	updateAgentHookBead(targetAgent, wispRootID, "", townBeadsDir)
-
-	// Store all attachment fields in a single read-modify-write cycle.
-	// NOTE: For standalone formula sling, the wisp IS the work - do NOT store
-	// attached_molecule as a self-reference (the wisp's own ID pointing to itself
-	// is meaningless). attached_molecule is only meaningful when a formula-on-bead
-	// creates a wisp that's bonded to a separate base bead.
-	fieldUpdates := beadFieldUpdates{
-		Dispatcher:      actor,
-		Args:            slingArgs,
-		Vars:            append([]string(nil), slingVars...),
-		AttachedFormula: formulaName,
-		FormulaVars:     strings.Join(slingVars, "\n"),
-	}
-	if err := storeFieldsInBead(wispRootID, fieldUpdates); err != nil {
-		fmt.Printf("%s Could not store fields in bead: %v\n", style.Dim.Render("Warning:"), err)
-	} else if slingArgs != "" {
-		fmt.Printf("%s Args stored in bead (durable)\n", style.Bold.Render("✓"))
-	}
-
-	// Start delayed dog session now that hook is set
-	// This ensures dog sees the hook when gt prime runs on session start
-	if delayedDogInfo != nil {
-		pane, err := delayedDogInfo.StartDelayedSession()
+	startedDelayedCrew := false
+	if delayedCrewInfo != nil {
+		pane, err := delayedCrewInfo.StartAfterHook(attachFormula)
 		if err != nil {
-			return fmt.Errorf("starting delayed dog session: %w", err)
+			if hookWritten {
+				fmt.Printf("%s Session failed, rolling back crew hook for %s...\n", style.Warning.Render("⚠"), delayedCrewInfo.CrewName)
+				rollbackDelayedCrewHook(wispRootID, "")
+			}
+			return fmt.Errorf("starting delayed crew session: %w", err)
 		}
 		targetPane = pane
-	}
-
-	// Start spawned polecat session now that hook is set.
-	// This ensures polecat sees the wisp when gt prime runs on session start.
-	if resolved.NewPolecatInfo != nil {
-		pane, err := resolved.NewPolecatInfo.StartSession()
-		if err != nil {
-			// Rollback: unhook wisp, delete Dolt branch, clean up polecat worktree/agent bead
-			rollbackSlingArtifactsFn(resolved.NewPolecatInfo, wispRootID, "", "")
-			return fmt.Errorf("starting polecat session: %w", err)
+		startedDelayedCrew = true
+	} else {
+		if err := attachFormula(); err != nil {
+			return err
 		}
-		targetPane = pane
+
+		// Start delayed dog session now that hook is set
+		// This ensures dog sees the hook when gt prime runs on session start
+		if delayedDogInfo != nil {
+			pane, err := delayedDogInfo.StartDelayedSession()
+			if err != nil {
+				return fmt.Errorf("starting delayed dog session: %w", err)
+			}
+			targetPane = pane
+		}
+
+		// Start spawned polecat session now that hook is set.
+		// This ensures polecat sees the wisp when gt prime runs on session start.
+		if resolved.NewPolecatInfo != nil {
+			pane, err := resolved.NewPolecatInfo.StartSession()
+			if err != nil {
+				// Rollback: unhook wisp, delete Dolt branch, clean up polecat worktree/agent bead
+				rollbackSlingArtifactsFn(resolved.NewPolecatInfo, wispRootID, "", "")
+				return fmt.Errorf("starting polecat session: %w", err)
+			}
+			targetPane = pane
+		}
 	}
 
 	// Step 4: Nudge to start (graceful if no tmux)
+	if startedDelayedCrew {
+		return nil
+	}
 	// Skip for self-sling - agent is currently processing the sling command and will see
 	// the hooked work on next turn. Nudging would inject text while agent is busy.
 	if isSelfSling {
