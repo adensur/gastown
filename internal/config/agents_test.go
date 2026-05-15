@@ -52,6 +52,26 @@ func TestBuiltinPresets(t *testing.T) {
 	}
 }
 
+// TestCodexPresetDeliversStartupPrompt locks in the gt-cv7 fix: codex's
+// preset must use prompt_mode="arg" so the startup beacon survives
+// BuildCommandWithPrompt instead of being silently dropped.
+func TestCodexPresetDeliversStartupPrompt(t *testing.T) {
+	t.Parallel()
+	info := GetAgentPreset(AgentCodex)
+	if info == nil {
+		t.Fatal("codex preset missing")
+	}
+	if info.PromptMode != "arg" {
+		t.Errorf("codex PromptMode = %q, want %q (regression: gt-cv7 dropped startup beacon)", info.PromptMode, "arg")
+	}
+
+	rc := RuntimeConfigFromPreset(AgentCodex)
+	cmd := rc.BuildCommandWithPrompt("BEACON_TOKEN")
+	if !strings.Contains(cmd, "BEACON_TOKEN") {
+		t.Errorf("BuildCommandWithPrompt should append prompt for codex, got: %s", cmd)
+	}
+}
+
 func TestGetAgentPresetByName(t *testing.T) {
 	t.Parallel()
 	tests := []struct {

@@ -291,9 +291,12 @@ var builtinPresets = map[AgentPreset]*AgentPresetInfo{
 			OutputFlag: "--json",
 		},
 		// Runtime defaults
-		PromptMode:        "none",
+		// codex accepts the initial prompt as a positional [PROMPT] arg
+		// (see `codex --help`), so the default "arg" dispatch in
+		// BuildCommandWithPrompt delivers the beacon correctly.
+		PromptMode:        "arg",
 		ReadyPromptPrefix: "› ",
-		ReadyDelayMs:      3000,
+		ReadyDelayMs:      6000,
 		InstructionsFile:  "AGENTS.md",
 	},
 	AgentCursor: {
