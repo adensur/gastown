@@ -519,6 +519,10 @@ func storeFieldsInBead(beadID string, updates beadFieldUpdates) error {
 // broke whenever the resolved pane was stale (gt-cv7: codex crews failed with
 // `can't find pane: %647` because sling's naive getSessionPane returned a pane
 // the agent didn't actually own).
+//
+// After sending, performs a verify-and-retry pass mirroring polecat's
+// verifyStartupNudgeDelivery: if the agent is still idle after a short delay,
+// the nudge was lost in the spawn-race window — retry. See gt-ywi.
 func injectStartPrompt(session, beadID, subject, args, townRoot string) error {
 	if session == "" {
 		return fmt.Errorf("no target session")
@@ -548,7 +552,61 @@ func injectStartPrompt(session, beadID, subject, args, townRoot string) error {
 	// TownRoot enables the cross-process flock that serializes concurrent
 	// nudges (sling + gt nudge running at the same time).
 	t := tmux.NewTmux()
-	return t.NudgeSessionWithOpts(session, prompt, tmux.NudgeOpts{TownRoot: townRoot})
+	if err := t.NudgeSessionWithOpts(session, prompt, tmux.NudgeOpts{TownRoot: townRoot}); err != nil {
+		return err
+	}
+
+	verifyNudgeDelivery(t, session, prompt, townRoot)
+	return nil
+}
+
+// verifyNudgeDelivery checks whether the agent picked up the sling nudge and
+// retries delivery if not. Mirrors verifyStartupNudgeDelivery in the polecat
+// session manager (a shared abstraction is tracked in gt-vpu / gt-uyt).
+//
+// IsIdle distinguishes "idle at prompt" from "busy processing" via the
+// "esc to interrupt" busy indicator — so a retry only fires when the agent
+// is genuinely still sitting at the prompt, not when it's actively working
+// on the just-delivered nudge.
+//
+// Non-fatal: if verification fails or exhausts retries, the session is left
+// running. The witness zombie patrol catches truly stuck agents.
+//
+// townRoot may be empty; in that case the helper is a no-op (matches the
+// existing graceful-degradation policy when sling is invoked outside a Gas
+// Town workspace).
+func verifyNudgeDelivery(t *tmux.Tmux, sessionName, retryContent, townRoot string) {
+	if townRoot == "" {
+		return
+	}
+	opCfg := config.LoadOperationalConfig(townRoot)
+	sessionCfg := opCfg.GetSessionConfig()
+	verifyDelay := sessionCfg.StartupNudgeVerifyDelayD()
+	maxRetries := sessionCfg.StartupNudgeMaxRetriesV()
+
+	for attempt := 1; attempt <= maxRetries; attempt++ {
+		time.Sleep(verifyDelay)
+
+		running, err := t.HasSession(sessionName)
+		if err != nil || !running {
+			return
+		}
+		if !t.IsIdle(sessionName) {
+			return // Agent is processing the nudge
+		}
+
+		fmt.Fprintf(os.Stderr, "[sling-nudge] attempt %d/%d: agent %s idle at prompt, retrying\n",
+			attempt, maxRetries, sessionName)
+		if err := t.NudgeSessionWithOpts(sessionName, retryContent, tmux.NudgeOpts{TownRoot: townRoot}); err != nil {
+			fmt.Fprintf(os.Stderr, "[sling-nudge] retry nudge failed for %s: %v\n", sessionName, err)
+			return
+		}
+	}
+
+	if t.IsIdle(sessionName) {
+		fmt.Fprintf(os.Stderr, "[sling-nudge] WARNING: agent %s still idle after %d nudge retries\n",
+			sessionName, maxRetries)
+	}
 }
 
 // getSessionFromPane extracts session name from a pane target.
@@ -629,6 +687,25 @@ func ensureAgentReady(sessionName string) error {
 	if err := t.WaitForRuntimeReady(sessionName, rc, constants.ClaudeStartTimeout); err != nil {
 		// Graceful degradation: warn but proceed (matches original behavior of always continuing)
 		fmt.Fprintf(os.Stderr, "Warning: agent readiness detection timed out for %s: %v\n", sessionName, err)
+	}
+
+	// For prompt-capable agents (Claude), additionally require the agent to be
+	// genuinely *settled*: no "esc to interrupt" busy indicator, prompt visible
+	// for 2 consecutive polls. WaitForRuntimeReady only checks "prompt seen
+	// once" — which is true during the splash screen and inter-tool-call gaps,
+	// not just at genuine idle. Without this stricter gate, sling's nudge can
+	// land while the agent is still processing bootstrap content, and the
+	// trailing Escape interrupts in-flight work. See gt-ywi.
+	//
+	// Skipped for agents without prompt detection (Gemini, Codex) where
+	// ReadyDelayMs is the only readiness signal.
+	if rc.Tmux != nil && rc.Tmux.ReadyPromptPrefix != "" {
+		if err := t.WaitForIdle(sessionName, constants.ClaudeStartTimeout); err != nil {
+			// Same graceful-degradation policy as WaitForRuntimeReady above:
+			// warn but proceed. The post-nudge verify-and-retry below will
+			// catch lost nudges if the agent really wasn't settled.
+			fmt.Fprintf(os.Stderr, "Warning: agent did not reach settled state for %s: %v\n", sessionName, err)
+		}
 	}
 
 	return nil
