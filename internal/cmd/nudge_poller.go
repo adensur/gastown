@@ -9,6 +9,7 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/steveyegge/gastown/internal/config"
+	"github.com/steveyegge/gastown/internal/notify"
 	"github.com/steveyegge/gastown/internal/nudge"
 	"github.com/steveyegge/gastown/internal/tmux"
 	"github.com/steveyegge/gastown/internal/workspace"
@@ -73,15 +74,13 @@ func runNudgePoller(cmd *cobra.Command, args []string) error {
 	// Resolve nudge options once at startup: if the target agent uses Escape
 	// as cancel (e.g., Gemini CLI), skip the Escape keystroke during delivery
 	// to avoid canceling in-flight generation. (GH#gt-wasn)
-	nudgeOpts := tmux.NudgeOpts{}
-	agentName := ""
+	skipEscape := false
 	hasPromptDetection := false
 	if name, err := t.GetEnvironment(sessionName, "GT_AGENT"); err == nil && name != "" {
-		agentName = name
-		if preset := config.GetAgentPresetByName(agentName); preset != nil {
+		if preset := config.GetAgentPresetByName(name); preset != nil {
 			hasPromptDetection = preset.ReadyPromptPrefix != ""
 			if preset.EscapeCancelsRequest {
-				nudgeOpts.SkipEscape = true
+				skipEscape = true
 			}
 		}
 	}
@@ -109,33 +108,19 @@ func runNudgePoller(cmd *cobra.Command, args []string) error {
 				continue
 			}
 
-			// For runtimes with prompt detection, defer delivery until the session
-			// is actually idle. Runtimes without prompt detection preserve the old
-			// best-effort behavior and drain on the poll interval.
-			waitOpts := nudgeWaitOpts(sessionName)
-			waitErr := t.WaitForIdleWithOpts(sessionName, idleTimeout, waitOpts)
-			if shouldSkipDrainUntilIdle(hasPromptDetection || waitOpts.RequireEmptyInput, waitErr) {
-				continue
-			}
-
-			// Drain and inject.
-			drained, err := nudge.Drain(townRoot, sessionName)
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "nudge-poller: drain error for %s: %v\n", sessionName, err)
-				continue
-			}
-			if len(drained) == 0 {
-				continue // someone else drained it
-			}
-
-			formatted := nudge.FormatForInjection(drained)
-			if err := t.NudgeSessionWithOpts(sessionName, formatted, nudgeOpts); err != nil {
-				fmt.Fprintf(os.Stderr, "nudge-poller: injection error for %s: %v\n", sessionName, err)
+			// Drain and inject through the shared delivery policy so human-facing
+			// strict idle checks match every other notification path.
+			if _, err := notify.DrainAndDeliverQueued(notify.DrainRequest{
+				Tmux:               t,
+				TownRoot:           townRoot,
+				SessionName:        sessionName,
+				IdleTimeout:        idleTimeout,
+				HasPromptDetection: hasPromptDetection,
+				SkipEscape:         skipEscape,
+				Stderr:             os.Stderr,
+			}); err != nil {
+				fmt.Fprintf(os.Stderr, "nudge-poller: delivery error for %s: %v\n", sessionName, err)
 			}
 		}
 	}
-}
-
-func shouldSkipDrainUntilIdle(hasPromptDetection bool, waitErr error) bool {
-	return hasPromptDetection && waitErr != nil
 }

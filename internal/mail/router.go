@@ -14,6 +14,7 @@ import (
 	"github.com/steveyegge/gastown/internal/beads"
 	"github.com/steveyegge/gastown/internal/config"
 	"github.com/steveyegge/gastown/internal/constants"
+	"github.com/steveyegge/gastown/internal/notify"
 	"github.com/steveyegge/gastown/internal/nudge"
 	"github.com/steveyegge/gastown/internal/session"
 	"github.com/steveyegge/gastown/internal/telemetry"
@@ -1630,53 +1631,36 @@ func (r *Router) notifyRecipient(msg *Message) error {
 		notification := formatNotificationMessage(msg)
 		priority := nudgePriorityForMailPriority(msg.Priority)
 
-		// Wait-idle-first delivery: try direct nudge if the agent is idle,
-		// fall back to cooperative queue if busy. WaitForIdle requires 2
-		// consecutive idle polls (prompt visible + no "esc to interrupt"
-		// in the status bar) to distinguish genuine idle from brief
-		// inter-tool-call gaps. See: https://github.com/steveyegge/gastown/issues/2032
-		//
-		// Human-facing consoles (mayor) additionally require the input box
-		// to be empty — otherwise send-keys would splice notification text
-		// into the human's in-progress message. See gt-o3w. On timeout,
-		// the nudge is queued and flushed at the next UserPromptSubmit
-		// (i.e., after the human presses Enter on their own message).
-		waitOpts := tmux.WaitForIdleOpts{RequireEmptyInput: session.IsHumanFacingAddress(msg.To)}
-		waitErr := r.tmux.WaitForIdleWithOpts(sessionID, timeout, waitOpts)
-		if waitErr == nil {
-			// Agent is idle — deliver directly for immediate wakeup.
-			if err := r.tmux.NudgeSession(sessionID, notification); err == nil {
+		mode := notify.ModeWaitIdle
+		if r.townRoot == "" {
+			// Without a workspace there is no cooperative queue to fall back to.
+			mode = notify.ModeImmediate
+		}
+		result, err := notify.Deliver(notify.Request{
+			Tmux:         r.tmux,
+			TownRoot:     r.townRoot,
+			SessionName:  sessionID,
+			Message:      notification,
+			Sender:       msg.From,
+			Priority:     priority,
+			Kind:         nudgeKindForMessage(msg),
+			ThreadID:     msg.ThreadID,
+			Severity:     prioritySeverityLabel(msg.Priority),
+			Mode:         mode,
+			DirectFormat: notify.DirectPlain,
+			WaitTimeout:  timeout,
+		})
+		if err == nil {
+			if result.Direct || result.Queued {
 				r.enqueueReplyReminder(msg, sessionID)
-				return nil
-			} else if errors.Is(err, tmux.ErrSessionNotFound) {
-				continue
-			} else if errors.Is(err, tmux.ErrNoServer) {
-				return nil
 			}
-		} else if errors.Is(waitErr, tmux.ErrSessionNotFound) {
-			continue
-		} else if errors.Is(waitErr, tmux.ErrNoServer) {
-			return nil
-		} else if r.townRoot != "" {
-			// Timeout (agent busy) — queue for cooperative delivery
-			// at the next turn boundary.
-			if err := nudge.Enqueue(r.townRoot, sessionID, nudge.QueuedNudge{
-				Sender:   msg.From,
-				Message:  notification,
-				Priority: priority,
-				Kind:     nudgeKindForMessage(msg),
-				ThreadID: msg.ThreadID,
-				Severity: prioritySeverityLabel(msg.Priority),
-			}); err != nil {
-				return err
-			}
-			r.enqueueReplyReminder(msg, sessionID)
 			return nil
 		}
-		// No town root available — last resort direct delivery.
-		err = r.tmux.NudgeSession(sessionID, notification)
-		if err == nil {
-			r.enqueueReplyReminder(msg, sessionID)
+		if errors.Is(err, tmux.ErrSessionNotFound) {
+			continue
+		}
+		if errors.Is(err, tmux.ErrNoServer) {
+			return nil
 		}
 		return err
 	}
@@ -1684,14 +1668,19 @@ func (r *Router) notifyRecipient(msg *Message) error {
 	// This handles headless ACP mode where there's no tmux session
 	if r.townRoot != "" && len(sessionIDs) > 0 {
 		notification := formatNotificationMessage(msg)
-		return nudge.Enqueue(r.townRoot, sessionIDs[0], nudge.QueuedNudge{
-			Sender:   msg.From,
-			Message:  notification,
-			Priority: nudgePriorityForMailPriority(msg.Priority),
-			Kind:     nudgeKindForMessage(msg),
-			ThreadID: msg.ThreadID,
-			Severity: prioritySeverityLabel(msg.Priority),
+		_, err := notify.Deliver(notify.Request{
+			Tmux:        r.tmux,
+			TownRoot:    r.townRoot,
+			SessionName: sessionIDs[0],
+			Message:     notification,
+			Sender:      msg.From,
+			Priority:    nudgePriorityForMailPriority(msg.Priority),
+			Kind:        nudgeKindForMessage(msg),
+			ThreadID:    msg.ThreadID,
+			Severity:    prioritySeverityLabel(msg.Priority),
+			Mode:        notify.ModeQueue,
 		})
+		return err
 	}
 
 	return nil // No active session found

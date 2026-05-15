@@ -2,10 +2,12 @@ package cmd
 
 import (
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/steveyegge/gastown/internal/notify"
 	"github.com/steveyegge/gastown/internal/nudge"
 	"github.com/steveyegge/gastown/internal/session"
 	"github.com/steveyegge/gastown/internal/tmux"
@@ -344,9 +346,9 @@ func TestNudgeWaitOptsRequireEmptyInputForHumanFacingSessions(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.sessionName, func(t *testing.T) {
-			got := nudgeWaitOpts(tt.sessionName)
+			got := notify.WaitOpts(tt.sessionName)
 			if got.RequireEmptyInput != tt.wantRequireEmpty {
-				t.Errorf("nudgeWaitOpts(%q).RequireEmptyInput = %v, want %v",
+				t.Errorf("notify.WaitOpts(%q).RequireEmptyInput = %v, want %v",
 					tt.sessionName, got.RequireEmptyInput, tt.wantRequireEmpty)
 			}
 		})
@@ -354,10 +356,10 @@ func TestNudgeWaitOptsRequireEmptyInputForHumanFacingSessions(t *testing.T) {
 }
 
 func TestPollerSkipsDrainOnHumanFacingIdleTimeout(t *testing.T) {
-	if !shouldSkipDrainUntilIdle(true, tmux.ErrIdleTimeout) {
+	if !notify.ShouldSkipDrainUntilIdle(true, tmux.ErrIdleTimeout) {
 		t.Fatal("poller should skip drain when human-facing strict idle wait times out")
 	}
-	if shouldSkipDrainUntilIdle(false, tmux.ErrIdleTimeout) {
+	if notify.ShouldSkipDrainUntilIdle(false, tmux.ErrIdleTimeout) {
 		t.Fatal("poller should preserve promptless agent best-effort drain behavior")
 	}
 }
@@ -482,6 +484,44 @@ func TestIdleWatcherPollInterval(t *testing.T) {
 	}
 }
 
+func TestResolveNudgePatternChannelFanout(t *testing.T) {
+	agents := []*AgentSession{
+		{Name: "gt-gastown-alpha", Type: AgentPolecat, Rig: "gastown", AgentName: "alpha"},
+		{Name: "gt-gastown-beta", Type: AgentPolecat, Rig: "gastown", AgentName: "beta"},
+		{Name: "gt-gastown-crew-dementus", Type: AgentCrew, Rig: "gastown", AgentName: "dementus"},
+		{Name: "gt-gastown-witness", Type: AgentWitness, Rig: "gastown"},
+		{Name: "gt-beads-alpha", Type: AgentPolecat, Rig: "beads", AgentName: "alpha"},
+		{Name: "gt-beads-witness", Type: AgentWitness, Rig: "beads"},
+	}
+
+	tests := []struct {
+		pattern string
+		want    []string
+	}{
+		{
+			pattern: "gastown/polecats/*",
+			want:    []string{"gt-gastown-alpha", "gt-gastown-beta"},
+		},
+		{
+			pattern: "gastown/crew/*",
+			want:    []string{"gt-gastown-crew-dementus"},
+		},
+		{
+			pattern: "*/witness",
+			want:    []string{"gt-gastown-witness", "gt-beads-witness"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.pattern, func(t *testing.T) {
+			got := resolveNudgePattern(tt.pattern, agents)
+			if !reflect.DeepEqual(got, tt.want) {
+				t.Fatalf("resolveNudgePattern(%q) = %#v, want %#v", tt.pattern, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestNudgeTrailingSlashNormalization(t *testing.T) {
 	// The mail system uses "mayor/" and "deacon/" as canonical addresses.
 	// runNudge must strip the trailing slash so these match the role shortcuts.
@@ -522,7 +562,7 @@ func TestNudgeTrailingSlashNormalization(t *testing.T) {
 }
 
 func TestIdleWatcherExitsOnEmptyQueue(t *testing.T) {
-	// watchAndDeliver should exit immediately when queue is empty
+	// WatchAndDeliverQueued should exit immediately when queue is empty
 	// (someone else drained it). We test this by calling with a
 	// temp dir that has no queue files.
 	origTimeout := idleWatcherTimeout
@@ -538,20 +578,26 @@ func TestIdleWatcherExitsOnEmptyQueue(t *testing.T) {
 
 	tmpDir := t.TempDir()
 
-	// watchAndDeliver checks QueueLen first — with no queue files,
+	// WatchAndDeliverQueued checks QueueLen first -- with no queue files,
 	// it should exit immediately. We verify it doesn't block.
 	done := make(chan struct{})
 	go func() {
 		// Use a nil-safe Tmux — QueueLen returns 0 before IsIdle is called.
-		watchAndDeliver(nil, tmpDir, "test-session")
+		notify.WatchAndDeliverQueued(notify.WatchRequest{
+			Tmux:         nil,
+			TownRoot:     tmpDir,
+			SessionName:  "test-session",
+			Timeout:      idleWatcherTimeout,
+			PollInterval: idleWatcherPollInterval,
+		})
 		close(done)
 	}()
 
 	select {
 	case <-done:
-		// Good — exited because queue was empty
+		// Good -- exited because queue was empty
 	case <-time.After(2 * time.Second):
-		t.Fatal("watchAndDeliver did not exit within 2s for empty queue")
+		t.Fatal("WatchAndDeliverQueued did not exit within 2s for empty queue")
 	}
 }
 
