@@ -566,11 +566,8 @@ func outputStartupDirective(ctx RoleContext) {
 		fmt.Println("   - If no mol → create patrol: `" + cli.Name() + " sling mol-deacon-patrol deacon`")
 		fmt.Println("6. Execute the patrol molecule's steps in DAG order. The final step")
 		fmt.Println("   (`exit-after-cycle`) calls `" + cli.Name() + " patrol report` to close the")
-		fmt.Println("   cycle wisp, then schedules a deferred self-exit:")
-		fmt.Println("     `nohup bash -c 'sleep 2 && " + cli.Name() + " deacon stop' >/dev/null 2>&1 &`")
-		fmt.Println("   Do NOT call `" + cli.Name() + " deacon stop` directly — the synchronous form")
-		fmt.Println("   kills its own bash subprocess and the tool call comes back as Interrupted,")
-		fmt.Println("   leaving you idle. Do NOT call `" + cli.Name() + " mol step await-signal`. Do NOT start cycle 2.")
+		fmt.Println("   cycle wisp, then `" + cli.Name() + " deacon stop` to terminate this session.")
+		fmt.Println("   Do NOT call `" + cli.Name() + " mol step await-signal`. Do NOT start cycle 2.")
 	case RoleDog:
 		fmt.Println()
 		fmt.Println("---")
