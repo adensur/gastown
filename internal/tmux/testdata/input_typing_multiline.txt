@@ -1,0 +1,11 @@
+  ⎿  Bash command completed.
+
+✻ Brewed for 4s
+
+─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯ uv run python search_evals/run_eval.py \j    harness=openai \j    model=gpt-5.5 \j    reasoning_effort=xhigh \j    suite=browsecomp \j  max_output_tokens=131072 \j  max_tool_calls=500 \j  openai_tools=web_search \j    run_suffix=300_nocode \j    limit=300 \j
+  max_workers=50 2>&1 | tee runs/12may/browsecomp-300-openai-nocode.log
+
+  let's submit it in search_evals rig as another task.
+─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  ⏵⏵ bypass permissions on (shift+tab to cycle)
