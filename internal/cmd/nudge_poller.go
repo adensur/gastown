@@ -112,8 +112,9 @@ func runNudgePoller(cmd *cobra.Command, args []string) error {
 			// For runtimes with prompt detection, defer delivery until the session
 			// is actually idle. Runtimes without prompt detection preserve the old
 			// best-effort behavior and drain on the poll interval.
-			waitErr := t.WaitForIdle(sessionName, idleTimeout)
-			if shouldSkipDrainUntilIdle(hasPromptDetection, waitErr) {
+			waitOpts := nudgeWaitOpts(sessionName)
+			waitErr := t.WaitForIdleWithOpts(sessionName, idleTimeout, waitOpts)
+			if shouldSkipDrainUntilIdle(hasPromptDetection || waitOpts.RequireEmptyInput, waitErr) {
 				continue
 			}
 
