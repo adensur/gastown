@@ -1,0 +1,75 @@
+
+  Searched for 2 patterns (ctrl+o to expand)
+
+⏺ Now let me write up Phase 1 findings.
+
+⏺ Write(/tmp/gt097-phase1.md)
+  ⎿  Wrote 107 lines to ../../../../../../tmp/gt097-phase1.md
+      1 # Phase 1 — Investigation & Design Proposal (post-reopen)
+      2
+      3 **No code. Awaiting decision on which option to pursue.**
+      4
+      5 ## TL;DR
+      6
+      7 PR #1 fixed the wrong code path. The current hang (PID 56554) came up via the **handoff** path (`internal/cmd/handoff.go:837` → prompt `"Run `gt prime --hook` and begin patrol."`), which I never touched. The hang itself is the agent **completing one
+        patrol cycle and going idle expecting the daemon to respawn it for the next cycle** — even though the molecule is designed for the agent to *loop in-process*. The deacon literally said so:
+      8
+      9 > *"Cycle 1 closed (hq-wisp-4m008). Next cycle hq-wisp-3yb6f on hook. Town remains quiet — handing back to the daemon's hook-driven respawn cadence. Patrol count = 1/20."*
+     … +113 lines (ctrl+o to expand)
+
+⏺ Bash(bd open gt-097 2>&1 | tail -3)
+  ⎿     reopen
+
+     Run 'bd --help' for usage.
+
+⏺ Bash(bd show gt-097 2>&1 | head -3)
+  ⎿  ◇ gt-097 [BUG] · Deacon spawns and hangs after one heartbeat — twice in a row (live PID 22940)   [● P1 · HOOKED]
+     Owner: mayor · Assignee: gastown/crew/MadMax · Type: bug
+     Created: 2026-05-15 · Updated: 2026-05-15
+
+⏺ Bash(bd comment gt-097 --file /tmp/gt097-phase1.md 2>&1 | tail -3)
+  ⎿  .beads
+     hint: Use -f if you really want to add them.
+     hint: Disable this message with "git config set advice.addIgnoredFile false"
+
+⏺ Bash(bd comments list gt-097 2>&1 | tail -5)
+  ⎿  Example:
+       bd comments bd-123
+
+     See: bd comments --help
+
+⏺ Bash(bd show gt-097 2>&1 | tail -8)
+  ⎿      - "Skip to Option A" → I write the text patch, push branch, do NOT merge until verified.
+         - "Go to Option B" → I draft a daemon-spawn design doc first (no code yet) for review.
+         - Or anything else.
+     … +5 lines (ctrl+o to expand)
+
+⏺ Phase 1 posted. Now notify mayor.
+
+⏺ Bash(gt mail send mayor/ -s "gt-097 Phase 1 posted — awaiting design decision (no code yet)" -m "Posted full investigation + 4 design options to gt-097 as a comment.…)
+  ⎿  ✓ Message sent to mayor/
+       Subject: gt-097 Phase 1 posted — awaiting design decision (no code yet)
+
+⏺ Phase 1 done. Summary of what I did this turn:
+
+  Investigation only — no code. Verified:
+
+  1. PR #1 didn't reach the bug — PID 56554 came up via the handoff path (handoff.go:837, prompt "Run gt prime --hook and begin patrol."), which I never modified. Same hang reproduces with a totally different prompt, confirming the cause is upstream of the prompt
+  text itself.
+  2. Root cause is architectural: the deacon completes one patrol cycle (heartbeat, patrol steps, gt patrol report), then goes idle expecting the daemon to respawn it for cycle 2 — quoting the agent itself: "handing back to the daemon's hook-driven respawn
+  cadence". It skips gt mol step await-signal, which is the in-process loop-keeper.
+  3. Why the deacon thinks this is correct: gt prime --hook's STARTUP PROTOCOL for RoleDeacon (prime_output.go:556-563) is 5 numbered steps that end at "create patrol" — no mention of looping. The agent dutifully follows the 5 steps and stops.
+  4. Why witness/refinery don't hang: same one-shot protocol, but the deacon nudges them via health-scan step (acts as a backoff reset). The deacon has no equivalent external nudger — single point of failure by design ("Witnesses observe the Deacon's last_activity
+  timestamp instead, and only send an alert to the Mayor").
+  5. 4 design options posted to bead (A: text fix at handoff + prime output; B: daemon-driven cron spawn; C: Stop-hook respawn; D: investigate witness runtime first, then prototype A on a branch).
+
+  PID 56554 preserved (Ss+, ~55 min elapsed). Mayor notified. Standing by for a decision on which option to pursue — no code without sign-off per mayor's reopen directive.
+
+✻ Cogitated for 6m 21s
+
+─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯ go with option D
+─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  ⏵⏵ bypass permissions on (shift+tab to cycle) · ← for agents
+
+

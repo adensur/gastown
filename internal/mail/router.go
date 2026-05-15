@@ -1635,7 +1635,14 @@ func (r *Router) notifyRecipient(msg *Message) error {
 		// consecutive idle polls (prompt visible + no "esc to interrupt"
 		// in the status bar) to distinguish genuine idle from brief
 		// inter-tool-call gaps. See: https://github.com/steveyegge/gastown/issues/2032
-		waitErr := r.tmux.WaitForIdle(sessionID, timeout)
+		//
+		// Human-facing consoles (mayor) additionally require the input box
+		// to be empty — otherwise send-keys would splice notification text
+		// into the human's in-progress message. See gt-o3w. On timeout,
+		// the nudge is queued and flushed at the next UserPromptSubmit
+		// (i.e., after the human presses Enter on their own message).
+		waitOpts := tmux.WaitForIdleOpts{RequireEmptyInput: isHumanFacingAddress(msg.To)}
+		waitErr := r.tmux.WaitForIdleWithOpts(sessionID, timeout, waitOpts)
 		if waitErr == nil {
 			// Agent is idle — deliver directly for immediate wakeup.
 			if err := r.tmux.NudgeSession(sessionID, notification); err == nil {
@@ -1704,6 +1711,23 @@ func nudgePriorityForMailPriority(priority Priority) string {
 	default:
 		return nudge.PriorityNormal
 	}
+}
+
+// isHumanFacingAddress reports whether the given mail address points at a
+// session a human typically types into. For those sessions, idle detection
+// must additionally verify that the input box is empty before delivering a
+// nudge via send-keys (otherwise the notification text interleaves with the
+// human's in-progress message). See gt-o3w.
+//
+// Currently the only canonical human-driven console is mayor; overseer is
+// handled separately via a banner above. Extend this list if other roles
+// become regularly human-driven.
+func isHumanFacingAddress(to string) bool {
+	switch strings.TrimSuffix(to, "/") {
+	case "mayor":
+		return true
+	}
+	return false
 }
 
 func formatNotificationMessage(msg *Message) string {

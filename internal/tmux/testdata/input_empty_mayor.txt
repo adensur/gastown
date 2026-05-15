@@ -1,0 +1,75 @@
+  max_workers=50 2>&1 | tee runs/12may/browsecomp-300-openai-nocode.log
+
+  let's submit it in search_evals rig as another task. Title - openai-nocode
+
+⏺ Bash(cd /Users/maksimgaiduk/gt/search_evals_agentic/mayor/rig && bd create --type task --priority 2 --assignee Nikita --parent sea-yti --title "openai-nocode" --desc…)
+  ⎿  ✓ Created issue: sea-yti.1 — openai-nocode
+       Priority: P2
+       Status: open
+  ⎿  Shell cwd was reset to /Users/maksimgaiduk/gt/mayor
+
+⏺ Bash(gt sling sea-yti.1 search_evals_agentic --crew Nikita --no-convoy 2>&1 | tail -5)
+  ⎿  🎯 Slinging sea-yti.1 to search_evals_agentic/crew/Nikita...
+     ✓ Work attached to hook (status=hooked)
+     ▶ Start prompt sent
+  ⎿  (timeout 1m)
+
+⏺ Filed and slung as sea-yti.1 — sibling/child of sea-yti, parented under the flaky-openai-evals epic. Delta from sea-cwd: openai_tools=web_search only (no code_interpreter), run_suffix=300_nocode. Nikita has it on hook.
+
+  Note: bead description explicitly tells Nikita to do the resume-cache pre-flight check (memory devbox-eval-resume-cache was prime'd into her session — should kick in automatically, but it's also in the bead text as belt-and-suspenders).
+
+✻ Brewed for 51s
+
+❯ 📬 You have new mail from gastown/crew/MadMax. Subject: gt-097 Phase 1 posted — awaiting design decision (no code yet). Run 'gt mail inbox' to read.
+
+⏺ Bash(gt mail inbox --unread 2>&1 | grep -iE "madmax.*phase|gt-097" | head -3)
+  ⎿    17. ● gt-097 Phase 1 posted — awaiting design decision (no code yet)
+
+⏺ Bash(gt mail inbox 2>&1 | grep -B1 "gt-097 Phase 1" | head -3)
+  ⎿        2026-05-14 22:13
+       21. ● gt-097 Phase 1 posted — awaiting design decision (no code yet)
+
+⏺ Bash(gt mail inbox 2>&1 | sed -n '40,50p')
+  ⎿        hq-36gy from deacon/dogs/alpha
+           2026-05-15 07:50
+       14. ● [HIGH] Deacon stuck_heartbeat_20330s detected by stuck-agent-dog [escalation] !
+     … +8 lines (ctrl+o to expand)
+
+⏺ Bash(gt mail inbox 2>&1 | grep -B1 "Phase 1 posted" | head -4)
+  ⎿        2026-05-14 22:13
+       21. ● gt-097 Phase 1 posted — awaiting design decision (no code yet)
+  ⎿  Interrupted · What should Claude do instead?
+
+❯ 📬 You have new mail from search_evals_agentic/crew/Nikita. Subject: sea-yti.1 (nocode): kicked off as 300_nocode_v2; fresh sampling confirmed. Run 'gt mail inbox' to read.
+
+⏺ Bash(cd /Users/maksimgaiduk/gt/gastown/mayor/rig && bd show gt-097 2>&1 | sed -n '/2026-05-15.*MadMax/,/^---\|^Status:\|^Total:/p' | head -120)
+  ⎿    2026-05-15 10:42 gastown/crew/MadMax
+         ## Root cause confirmed (PID 22940 still live)
+     … +40 lines (ctrl+o to expand)
+  ⎿  Shell cwd was reset to /Users/maksimgaiduk/gt/mayor
+
+⏺ Bash(gt mail inbox 2>&1 | grep -B1 "sea-yti.1.*nocode" | head -3)
+  ⎿        2026-05-14 22:13
+       21. ● sea-yti.1 (nocode): kicked off as 300_nocode_v2; fresh sampling confirmed
+
+⏺ Bash(cd /Users/maksimgaiduk/gt/gastown/mayor/rig && bd show gt-097 2>&1 | sed -n '/12:28 gastown.*MadMax/,/^Status:\|^Total:/p' | tail -120)
+  ⎿    2026-05-15 12:28 gastown/crew/MadMax
+         # Phase 1 — Investigation & Design Proposal (post-reopen)
+     … +41 lines (ctrl+o to expand)
+  ⎿  Shell cwd was reset to /Users/maksimgaiduk/gt/mayor
+
+  Bash(gt mail inbox 2>&1 | grep -B1 "sea-yti.1" | head -4 && echo "---" && gt mail read $(gt mail inbox 2>&1 | grep "sea-yti.1" -B1 | head -2 | grep "hq-wisp" | awk '…)
+  ⎿  2026-05-14 22:13
+       21. ● sea-yti.1 (nocode): kicked off as 300_nocode_v2; fresh sampling confirmed
+     ---
+     (11s)
+     (ctrl+b ctrl+b (twice) to run in background)
+
+✶ Ebbing… (53s · ↓ 1.8k tokens)
+  ⎿  Tip: Use /btw to ask a quick side question without interrupting Claude's current work
+
+─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯ 
+─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  ⏵⏵ bypass permissions on (shift+tab to cycle)
+

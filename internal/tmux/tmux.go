@@ -2877,6 +2877,92 @@ func hasBusyIndicator(line string) bool {
 	return strings.Contains(trimmed, "esc to interrupt")
 }
 
+// HasInputContent reports whether Claude Code's input box currently holds
+// user-typed text. It locates the input box by finding the bottommost pair
+// of horizontal rule lines (━/─ box drawing) and inspecting the lines
+// between them. Returns true only when content is unambiguously present;
+// returns false when the input is empty OR when the heuristic cannot
+// confidently identify the input area (preserves existing delivery
+// behavior for non-Claude-Code agents and unrecognized renderings).
+//
+// Layout in Claude Code's TUI:
+//
+//	─────────...   <- top rule
+//	❯ <user text, possibly empty or wrapping over multiple lines>
+//	─────────...   <- bottom rule
+//	  ⏵⏵ status bar
+func HasInputContent(lines []string, promptPrefix string) bool {
+	bottomRule := -1
+	for i := len(lines) - 1; i >= 0; i-- {
+		if isHorizontalRule(lines[i]) {
+			bottomRule = i
+			break
+		}
+	}
+	if bottomRule <= 0 {
+		return false
+	}
+	topRule := -1
+	for i := bottomRule - 1; i >= 0; i-- {
+		if isHorizontalRule(lines[i]) {
+			topRule = i
+			break
+		}
+	}
+	if topRule < 0 || bottomRule-topRule < 2 {
+		return false
+	}
+
+	normalizedPrefix := strings.ReplaceAll(promptPrefix, " ", " ")
+	promptFound := false
+	for i := topRule + 1; i < bottomRule; i++ {
+		line := strings.ReplaceAll(lines[i], " ", " ")
+		if !promptFound {
+			trimmed := strings.TrimLeft(line, " \t")
+			if strings.HasPrefix(trimmed, normalizedPrefix) {
+				promptFound = true
+				rest := strings.TrimPrefix(trimmed, normalizedPrefix)
+				if strings.TrimSpace(rest) != "" {
+					return true
+				}
+				continue
+			}
+			// Some renderings put the bare prompt glyph without trailing space
+			// on its own line; tolerate that.
+			if trimmed == strings.TrimSpace(normalizedPrefix) {
+				promptFound = true
+				continue
+			}
+			// No prompt yet on this line — could be a wrap continuation before
+			// the prompt was reached, which shouldn't happen, but stay safe.
+			continue
+		}
+		// Continuation lines of the input box (visual wrap of long input).
+		if strings.TrimSpace(line) != "" {
+			return true
+		}
+	}
+	return false
+}
+
+// isHorizontalRule reports whether the line is a Claude Code box-drawing
+// rule used to delimit the input area. Tolerates leading/trailing
+// whitespace and requires the bulk of the line to be ─ (U+2500) or ━.
+// Minimum rune count guards against short box-drawing runs (e.g. inside
+// scrollback content) being misread as input-box rules; real Claude Code
+// rules span the pane width.
+func isHorizontalRule(line string) bool {
+	trimmed := strings.TrimSpace(line)
+	count := 0
+	for _, r := range trimmed {
+		if r != '─' && r != '━' {
+			return false
+		}
+		count++
+	}
+	return count >= 10
+}
+
 func readyPromptPrefixForSession(t *Tmux, session string) string {
 	promptPrefix := DefaultReadyPromptPrefix
 	agentName, err := t.GetEnvironment(session, "GT_AGENT")
@@ -2938,6 +3024,21 @@ const DefaultReadyPromptPrefix = "❯ "
 // Returns nil if the agent becomes idle within the timeout.
 // Returns an error if the timeout expires while the agent is still busy.
 func (t *Tmux) WaitForIdle(session string, timeout time.Duration) error {
+	return t.WaitForIdleWithOpts(session, timeout, WaitForIdleOpts{})
+}
+
+// WaitForIdleOpts configures additional idle-detection criteria.
+type WaitForIdleOpts struct {
+	// RequireEmptyInput, when true, additionally requires the Claude Code
+	// input box to be empty (no user-typed content between the box rules).
+	// Set this for delivery into human-driven consoles, where typing into
+	// the input field via send-keys would splice notification text into
+	// the human's in-progress message. See gt-o3w.
+	RequireEmptyInput bool
+}
+
+// WaitForIdleWithOpts is WaitForIdle with extra criteria. See WaitForIdleOpts.
+func (t *Tmux) WaitForIdleWithOpts(session string, timeout time.Duration, opts WaitForIdleOpts) error {
 	promptPrefix := readyPromptPrefixForSession(t, session)
 	prefix := strings.TrimSpace(promptPrefix)
 
@@ -2948,9 +3049,17 @@ func (t *Tmux) WaitForIdle(session string, timeout time.Duration) error {
 	consecutiveIdle := 0
 	const requiredConsecutive = 2
 
+	// When checking input-box emptiness we need enough lines to see both
+	// rule lines plus any wrapped input between them. 10 lines is a safe
+	// margin without slowing the poll meaningfully.
+	captureLines := 5
+	if opts.RequireEmptyInput {
+		captureLines = 10
+	}
+
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
-		lines, err := t.CapturePaneLines(session, 5)
+		lines, err := t.CapturePaneLines(session, captureLines)
 		if err != nil {
 			// Distinguish terminal errors from transient ones.
 			// Session not found or no server means the session is gone —
@@ -2994,13 +3103,24 @@ func (t *Tmux) WaitForIdle(session string, timeout time.Duration) error {
 			}
 		}
 
-		if promptFound {
-			consecutiveIdle++
-			if consecutiveIdle >= requiredConsecutive {
-				return nil
-			}
-		} else {
+		if !promptFound {
 			consecutiveIdle = 0
+			time.Sleep(200 * time.Millisecond)
+			continue
+		}
+
+		// Human-driven consoles: require the input box to be empty.
+		// If content is present, treat as busy — the caller's fallback
+		// (nudge queue) will defer delivery until the human submits.
+		if opts.RequireEmptyInput && HasInputContent(lines, promptPrefix) {
+			consecutiveIdle = 0
+			time.Sleep(200 * time.Millisecond)
+			continue
+		}
+
+		consecutiveIdle++
+		if consecutiveIdle >= requiredConsecutive {
+			return nil
 		}
 		time.Sleep(200 * time.Millisecond)
 	}

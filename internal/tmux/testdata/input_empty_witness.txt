@@ -1,0 +1,75 @@
+❯ Polecat dispatched - check for work
+
+⏺ jasper picked up ts-hbd (remove AI audio, route playback through VoiceContext).
+
+✻ Sautéed for 19s
+
+❯ Polecat dispatched - check for work
+
+⏺ Bash(gt polecat list tongue_sentences2)
+  ⎿  Polecats
+
+       ● tongue_sentences2/jasper  working
+     … +4 lines (ctrl+o to expand)
+
+⏺ Bash(bd show ts-7nn 2>&1 | head -18)
+  ⎿  ◇ ts-7nn · scripts/check_audio.py: static check that every manifest entry has a recording   [● P2 · HOOKED]
+     Owner: tongue_sentences2/crew/Teacher · Assignee: tongue_sentences2/polecats/obsidian · Type: task
+     Created: 2026-05-15 · Updated: 2026-05-15
+     … +14 lines (ctrl+o to expand)
+
+⏺ obsidian picked up ts-7nn (manifest audit script). All three polecats working in parallel.
+
+✻ Worked for 33s
+
+❯ POLECAT_DONE obsidian exit=COMPLETED
+
+⏺ Bash(bd show ts-7nn 2>&1 | head -5)
+  ⎿  ✓ ts-7nn · scripts/check_audio.py: static check that every manifest entry has a recording   [● P2 · CLOSED]
+     Owner: tongue_sentences2/crew/Teacher · Assignee: tongue_sentences2/polecats/obsidian · Type: task
+     Created: 2026-05-15 · Started: 2026-05-15 · Updated: 2026-05-15
+     Close reason: Direct merge to main (convoy strategy)
+
+⏺ obsidian shipped ts-7nn (check_audio.py manifest audit) — direct merge to main, closed.
+
+✻ Cogitated for 6s
+
+❯ Polecat dispatched - check for work
+
+⏺ Bash(gt polecat list tongue_sentences2)
+  ⎿  Polecats
+
+       ● tongue_sentences2/jasper  working
+     … +4 lines (ctrl+o to expand)
+
+⏺ Bash(bd show ts-obs 2>&1 | head -18
+      echo "---PEEK---"…)
+  ⎿  ◇ ts-obs · Codegen AudioAssetIndex.swift with #error lines for missing audio   [● P2 · HOOKED]
+     Owner: tongue_sentences2/crew/Teacher · Assignee: tongue_sentences2/polecats/obsidian · Type: task
+     Created: 2026-05-15 · Updated: 2026-05-15
+     … +27 lines (ctrl+o to expand)
+
+⏺ obsidian dispatched on ts-obs (AudioAssetIndex codegen). "Stalled" status is just boot-up timing — fresh Claude Code splash, dispatch nudge incoming.
+
+  Approaching ~15 patrol loops. Will hand off after next event(s) if cadence continues.
+
+✻ Crunched for 34s
+
+❯ POLECAT_DONE jasper exit=COMPLETED
+
+⏺ Bash(bd show ts-hbd 2>&1 | head -5)
+  ⎿  ✓ ts-hbd · Nuke AI audio + route every playback through VoiceContext   [● P2 · CLOSED]
+     Owner: tongue_sentences2/crew/Teacher · Assignee: tongue_sentences2/polecats/jasper · Type: task
+     Created: 2026-05-15 · Started: 2026-05-15 · Updated: 2026-05-15
+     Close reason: Direct merge to main (convoy strategy)
+
+⏺ jasper shipped ts-hbd (nuke AI audio + route through VoiceContext) — direct merge to main, closed.
+
+✻ Crunched for 6s
+
+─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯ 
+─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  ⏵⏵ bypass permissions on (shift+tab to cycle) · ← for agents
+
+
