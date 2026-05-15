@@ -166,15 +166,15 @@ func (m *Manager) Start(agentOverride string) error {
 		_ = session.TrackSessionPID(m.townRoot, sessionID, realTmux)
 	}
 
-	// PATCH-010: Set auto-respawn hook for Deacon resilience.
-	// When Claude exits (for any reason), tmux will automatically respawn it.
-	// This prevents the crash loop where daemon repeatedly restarts Deacon.
-	// Note: SetAutoRespawnHook calls SetRemainOnExit again (harmless, already set above).
-	if err := t.SetAutoRespawnHook(sessionID); err != nil {
-		// Non-fatal: Deacon still works, just won't auto-respawn on crash
-		// Daemon will still restart it, but with a delay
-		fmt.Printf("warning: failed to set auto-respawn hook for deacon: %v\n", err)
-	}
+	// Cron-spawn mode (gt-097): DO NOT set the tmux pane-died auto-respawn hook.
+	// The Deacon is expected to terminate cleanly after exactly one patrol cycle;
+	// re-launching Claude in the same pane would defeat the cron-spawn cadence
+	// and re-introduce the in-process loop that produced the original hang.
+	// The daemon's recovery heartbeat tick (`ensureDeaconRunning`, ~3 min) is
+	// the new respawn mechanism — it spawns a fresh session by re-running this
+	// Start path, picking up any updated bootstrap prompt / binary in the
+	// process. PATCH-010's crash-loop concern is now handled by the
+	// RestartTracker backoff in `Daemon.ensureDeaconRunning`.
 
 	// Accept startup dialogs (workspace trust + bypass permissions) if they appear.
 	_ = t.AcceptStartupDialogs(sessionID)

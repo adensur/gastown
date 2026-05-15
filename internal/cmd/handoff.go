@@ -17,6 +17,7 @@ import (
 	"github.com/steveyegge/gastown/internal/cli"
 	"github.com/steveyegge/gastown/internal/config"
 	"github.com/steveyegge/gastown/internal/constants"
+	"github.com/steveyegge/gastown/internal/deacon"
 	"github.com/steveyegge/gastown/internal/events"
 	"github.com/steveyegge/gastown/internal/git"
 	"github.com/steveyegge/gastown/internal/mail"
@@ -824,8 +825,18 @@ func buildRestartCommandWithOpts(sessionName string, opts buildRestartCommandOpt
 		} else {
 			beacon = "Your account was rotated to avoid a rate limit. Continue your previous task."
 		}
+	} else if simpleRole == constants.RoleDeacon {
+		// Deacon runs in cron-spawn mode (gt-097): one cycle then exit.
+		// Self-handoffs must use the same one-shot bootstrap prompt as the
+		// daemon's fresh spawn so the new session doesn't drift into the
+		// older "perpetual patrol loop" mental model that caused the hang.
+		beacon = session.BuildStartupPrompt(session.BeaconConfig{
+			Recipient: identity.BeaconAddress(),
+			Sender:    "self",
+			Topic:     "patrol",
+		}, deacon.BootstrapPrompt)
 	} else if isPatrolRole(simpleRole) {
-		// Patrol roles (refinery, witness, deacon) must re-enter their patrol
+		// Patrol roles (refinery, witness) must re-enter their patrol
 		// loop on handoff, not "wait for instructions." Without this, idle
 		// patrol agents cycle through handoff→prime→no-work→handoff burning
 		// CPU and tokens indefinitely. The patrol instruction ensures they
