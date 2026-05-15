@@ -1898,6 +1898,68 @@ func TestWaitForIdle_Timeout(t *testing.T) {
 	}
 }
 
+// TestWaitForIdleWithOpts_RequireEmptyInput verifies end-to-end that the
+// strict idle gate refuses to deliver while the input box has content, but
+// allows delivery once the input is empty. Renders a fake Claude Code
+// input box into a throwaway tmux session via `cat` and inspects what
+// WaitForIdleWithOpts decides.
+func TestWaitForIdleWithOpts_RequireEmptyInput(t *testing.T) {
+	if os.Getenv("TMUX") == "" {
+		t.Skip("not inside tmux")
+	}
+	if runtime.GOOS != "darwin" && runtime.GOOS != "linux" {
+		t.Skip("test requires unix")
+	}
+
+	tm := newTestTmux(t)
+
+	sessionName := fmt.Sprintf("gt-test-strict-%d", time.Now().UnixNano())
+	// Use a long-lived no-op so the pane contents are stable and we control
+	// what gets rendered. printf into the pane to draw the fake TUI.
+	if err := tm.NewSessionWithCommand(sessionName, os.TempDir(), "sleep 30"); err != nil {
+		t.Fatalf("NewSessionWithCommand: %v", err)
+	}
+	defer func() { _ = tm.KillSession(sessionName) }()
+
+	rule := strings.Repeat("─", 60)
+
+	// Render a fake Claude Code TUI with a NON-empty input box.
+	// Using tmux send-keys -l + printf via display-message is brittle; instead,
+	// write to the pty by piping from the shell. The session is running sleep,
+	// but tmux's `respawn-pane` lets us swap to a command that prints our layout.
+	render := func(body string) {
+		// Use tmux respawn-pane -k to replace the command, then `cat <<EOF`-equivalent
+		// via printf to render content. After printing, the new command must keep
+		// the pane alive so our render persists.
+		script := fmt.Sprintf(`printf '%%s\n' '%s' && sleep 30`, body)
+		if _, err := tm.run("respawn-pane", "-k", "-t", sessionName, "sh", "-c", script); err != nil {
+			t.Fatalf("respawn-pane: %v", err)
+		}
+		time.Sleep(300 * time.Millisecond)
+	}
+
+	// Case 1: typed input present
+	render(fmt.Sprintf("%s\n❯ hello typed text\n%s\n  ⏵⏵ bypass permissions on", rule, rule))
+
+	loose := tm.WaitForIdle(sessionName, 1500*time.Millisecond)
+	if loose != nil {
+		t.Errorf("loose WaitForIdle should succeed when prompt visible and no busy indicator, got: %v", loose)
+	}
+
+	strict := tm.WaitForIdleWithOpts(sessionName, 1500*time.Millisecond, WaitForIdleOpts{RequireEmptyInput: true})
+	if !errors.Is(strict, ErrIdleTimeout) {
+		t.Errorf("strict WaitForIdleWithOpts should time out when input has content, got: %v", strict)
+	}
+
+	// Case 2: empty input
+	render(fmt.Sprintf("%s\n❯ \n%s\n  ⏵⏵ bypass permissions on", rule, rule))
+
+	strictEmpty := tm.WaitForIdleWithOpts(sessionName, 1500*time.Millisecond, WaitForIdleOpts{RequireEmptyInput: true})
+	if strictEmpty != nil {
+		t.Errorf("strict WaitForIdleWithOpts should succeed when input is empty, got: %v", strictEmpty)
+	}
+}
+
 func TestHasBusyIndicator(t *testing.T) {
 	t.Parallel()
 
