@@ -870,24 +870,17 @@ func (m *Manager) Start(name string, opts StartOptions) error {
 
 	// Wait for the agent to start, then accept any startup dialogs that appear.
 	// Workspace trust dialog is independent of bypass permissions and can appear
-	// for any agent, so we always check for non-interactive sessions.
+	// for any agent (e.g., codex's first-run "Do you trust the contents of this
+	// directory?"), so we always check for non-interactive sessions — matching
+	// the polecat / deacon / witness / daemon spawn paths. AcceptStartupDialogs
+	// is idempotent: it polls for known dialog text and times out cleanly if
+	// no dialog appears (gt-xo5).
 	if !opts.Interactive {
-		agentName := opts.AgentOverride
-		if agentName == "" {
-			if rc := config.ResolveWorkerAgentConfig(name, townRoot, m.rig.Path); rc != nil && rc.Provider != "" {
-				agentName = rc.Provider
-			} else {
-				agentName = "claude"
-			}
+		if err := t.WaitForCommand(sessionID, constants.SupportedShells, constants.ClaudeStartTimeout); err != nil {
+			// Non-fatal — agent might still start
+			style.PrintWarning("timeout waiting for agent to start: %v", err)
 		}
-		preset := config.GetAgentPresetByName(agentName)
-		if preset != nil && preset.EmitsPermissionWarning {
-			if err := t.WaitForCommand(sessionID, constants.SupportedShells, constants.ClaudeStartTimeout); err != nil {
-				// Non-fatal — agent might still start
-				style.PrintWarning("timeout waiting for agent to start: %v", err)
-			}
-			_ = t.AcceptStartupDialogs(sessionID)
-		}
+		_ = t.AcceptStartupDialogs(sessionID)
 
 		// Start background nudge-queue poller for ALL agents (gt-dgf).
 		// Claude drains its queue via UserPromptSubmit hook, but that hook only
