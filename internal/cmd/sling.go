@@ -1061,22 +1061,28 @@ func runSling(cmd *cobra.Command, args []string) (retErr error) {
 	} else if targetPane == "" {
 		fmt.Printf("%s No pane to nudge (agent will discover work via gt prime)\n", style.Dim.Render("○"))
 	} else {
-		// Ensure agent is ready before nudging (prevents race condition where
-		// message arrives before Claude has fully started - see issue #115)
+		// Resolve to a session name and route the nudge through NudgeSession
+		// (FindAgentPane-aware) rather than the pre-resolved pane. The pane
+		// from resolveTargetAgent can go stale between resolution and delivery,
+		// especially for agents whose TUI rearranges panes (gt-cv7).
 		sessionName := getSessionFromPane(targetPane)
-		if sessionName != "" {
+		if sessionName == "" {
+			fmt.Printf("%s Could not resolve session from pane %s (agent will discover work via gt prime)\n", style.Dim.Render("○"), targetPane)
+		} else {
+			// Ensure agent is ready before nudging (prevents race condition where
+			// message arrives before Claude has fully started - see issue #115)
 			if err := ensureAgentReady(sessionName); err != nil {
 				// Non-fatal: warn and continue, agent will discover work via gt prime
 				fmt.Printf("%s Could not verify agent ready: %v\n", style.Dim.Render("○"), err)
 			}
-		}
 
-		if err := injectStartPrompt(targetPane, beadID, slingSubject, slingArgs); err != nil {
-			// Graceful fallback for no-tmux mode
-			fmt.Printf("%s Could not nudge (no tmux?): %v\n", style.Dim.Render("○"), err)
-			fmt.Printf("  Agent will discover work via gt prime / bd show\n")
-		} else {
-			fmt.Printf("%s Start prompt sent\n", style.Bold.Render("▶"))
+			if err := injectStartPrompt(sessionName, beadID, slingSubject, slingArgs, townRoot); err != nil {
+				// Graceful fallback for no-tmux mode
+				fmt.Printf("%s Could not nudge (no tmux?): %v\n", style.Dim.Render("○"), err)
+				fmt.Printf("  Agent will discover work via gt prime / bd show\n")
+			} else {
+				fmt.Printf("%s Start prompt sent\n", style.Bold.Render("▶"))
+			}
 		}
 	}
 

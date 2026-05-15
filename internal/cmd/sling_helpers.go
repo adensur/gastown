@@ -512,11 +512,16 @@ func storeFieldsInBead(beadID string, updates beadFieldUpdates) error {
 	return nil
 }
 
-// injectStartPrompt sends a prompt to the target pane to start working.
-// Uses the reliable nudge pattern: literal mode + 500ms debounce + separate Enter.
-func injectStartPrompt(pane, beadID, subject, args string) error {
-	if pane == "" {
-		return fmt.Errorf("no target pane")
+// injectStartPrompt sends a prompt to the target session to start working.
+// Routes through NudgeSessionWithOpts so pane resolution uses the GT_PANE_ID /
+// process-name fallback in FindAgentPane — same path as `gt nudge`. Earlier
+// versions resolved a pane ID up-front and called NudgePane directly, which
+// broke whenever the resolved pane was stale (gt-cv7: codex crews failed with
+// `can't find pane: %647` because sling's naive getSessionPane returned a pane
+// the agent didn't actually own).
+func injectStartPrompt(session, beadID, subject, args, townRoot string) error {
+	if session == "" {
+		return fmt.Errorf("no target session")
 	}
 
 	// Skip nudge during tests to prevent agent self-interruption
@@ -539,9 +544,11 @@ func injectStartPrompt(pane, beadID, subject, args string) error {
 		prompt = fmt.Sprintf("Work slung: %s. Start working on it now - run `"+cli.Name()+" hook` to see the hook, then begin.", beadID)
 	}
 
-	// Use the reliable nudge pattern (same as gt nudge / tmux.NudgeSession)
+	// Use the reliable nudge pattern (same as gt nudge).
+	// TownRoot enables the cross-process flock that serializes concurrent
+	// nudges (sling + gt nudge running at the same time).
 	t := tmux.NewTmux()
-	return t.NudgePane(pane, prompt)
+	return t.NudgeSessionWithOpts(session, prompt, tmux.NudgeOpts{TownRoot: townRoot})
 }
 
 // getSessionFromPane extracts session name from a pane target.
