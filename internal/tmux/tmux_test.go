@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
@@ -1894,6 +1895,159 @@ func TestDefaultReadyPromptPrefix(t *testing.T) {
 	}
 	if !strings.Contains(DefaultReadyPromptPrefix, "❯") {
 		t.Errorf("DefaultReadyPromptPrefix = %q, want to contain ❯", DefaultReadyPromptPrefix)
+	}
+}
+
+func TestIsHorizontalRule(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		line string
+		want bool
+	}{
+		{"long ─ rule", strings.Repeat("─", 100), true},
+		{"long ━ rule", strings.Repeat("━", 100), true},
+		{"rule with leading/trailing space", "  " + strings.Repeat("─", 50) + "  ", true},
+		{"short ─ run is not a rule", strings.Repeat("─", 5), false},
+		{"mixed content not a rule", "── some text ──", false},
+		{"empty", "", false},
+		{"only spaces", "     ", false},
+		{"prompt line not a rule", "❯ go with option D", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := isHorizontalRule(tt.line); got != tt.want {
+				t.Errorf("isHorizontalRule(%q) = %v, want %v", tt.line, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestHasInputContent_Fixtures(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		fixture string
+		want    bool
+	}{
+		{"input_empty_mayor.txt", false},
+		{"input_empty_obsidian.txt", false},
+		{"input_empty_witness.txt", false},
+		{"input_typing_short.txt", true},
+		{"input_typing_multiline.txt", true},
+		{"input_busy.txt", false}, // busy has no input box rules visible at bottom
+	}
+	for _, tt := range tests {
+		t.Run(tt.fixture, func(t *testing.T) {
+			data, err := os.ReadFile(filepath.Join("testdata", tt.fixture))
+			if err != nil {
+				t.Fatalf("read fixture: %v", err)
+			}
+			lines := strings.Split(string(data), "\n")
+			got := HasInputContent(lines, DefaultReadyPromptPrefix)
+			if got != tt.want {
+				t.Errorf("HasInputContent(%s) = %v, want %v", tt.fixture, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestHasInputContent_Synthetic(t *testing.T) {
+	t.Parallel()
+	rule := strings.Repeat("─", 120)
+	const nbsp = " "
+	tests := []struct {
+		name  string
+		lines []string
+		want  bool
+	}{
+		{
+			name: "empty input between rules",
+			lines: []string{
+				"some scrollback",
+				rule,
+				"❯ ",
+				rule,
+				"  ⏵⏵ bypass permissions on",
+			},
+			want: false,
+		},
+		{
+			name: "bare prompt without trailing space",
+			lines: []string{
+				rule,
+				"❯",
+				rule,
+			},
+			want: false,
+		},
+		{
+			name: "NBSP after prompt with no input",
+			lines: []string{
+				rule,
+				"❯" + nbsp,
+				rule,
+			},
+			want: false,
+		},
+		{
+			name: "NBSP after prompt with typed input",
+			lines: []string{
+				rule,
+				"❯" + nbsp + "hello",
+				rule,
+			},
+			want: true,
+		},
+		{
+			name: "single char typed",
+			lines: []string{
+				rule,
+				"❯ a",
+				rule,
+			},
+			want: true,
+		},
+		{
+			name: "wrapped multi-line input (content on continuation line)",
+			lines: []string{
+				rule,
+				"❯ ",
+				"  this is wrapped content",
+				rule,
+			},
+			want: true,
+		},
+		{
+			name: "wrapped multi-line input (both lines empty)",
+			lines: []string{
+				rule,
+				"❯ ",
+				"",
+				rule,
+			},
+			want: false,
+		},
+		{
+			name:  "no rules found at all",
+			lines: []string{"just some output", "no rules here", "❯ typed but no box"},
+			want:  false,
+		},
+		{
+			name: "only one rule found",
+			lines: []string{
+				rule,
+				"❯ hello",
+				"no closing rule",
+			},
+			want: false,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := HasInputContent(tt.lines, DefaultReadyPromptPrefix); got != tt.want {
+				t.Errorf("HasInputContent = %v, want %v", got, tt.want)
+			}
+		})
 	}
 }
 
