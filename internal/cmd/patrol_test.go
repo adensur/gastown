@@ -188,7 +188,7 @@ func TestBuildStepAudit(t *testing.T) {
 		{
 			name:        "deacon patrol with all steps OK",
 			formulaName: "mol-deacon-patrol",
-			stepsFlag:   "heartbeat:OK,inbox-check:OK,orphan-process-cleanup:OK,test-pollution-cleanup:OK,gate-evaluation:OK,dispatch-gated-molecules:OK,check-convoy-completion:OK,resolve-external-deps:OK,fire-notifications:OK,heartbeat-mid:OK,health-scan:OK,dolt-health:OK,zombie-scan:OK,plugin-run:OK,dog-pool-maintenance:OK,dog-health-check:OK,orphan-check:OK,session-gc:OK,wisp-compact:OK,compact-report:OK,costs-digest:OK,patrol-digest:OK,log-maintenance:OK,patrol-cleanup:OK,context-check:OK,exit-after-cycle:OK",
+			stepsFlag:   "heartbeat:OK,inbox-check:OK,orphan-process-cleanup:OK,test-pollution-cleanup:OK,gate-evaluation:OK,dispatch-gated-molecules:OK,check-convoy-completion:OK,resolve-external-deps:OK,fire-notifications:OK,heartbeat-mid:OK,health-scan:OK,dolt-health:OK,zombie-scan:OK,plugin-run:OK,dog-pool-maintenance:OK,dog-health-check:OK,orphan-check:OK,session-gc:OK,wisp-compact:OK,compact-report:OK,costs-digest:OK,patrol-digest:OK,log-maintenance:OK,patrol-cleanup:OK,context-check:OK,loop-or-exit:OK",
 			wantPrefix:  "Steps:",
 			wantSuffix:  "(26/26)",
 			wantContain: "heartbeat OK",
@@ -196,7 +196,7 @@ func TestBuildStepAudit(t *testing.T) {
 		{
 			name:        "deacon patrol with some steps skipped",
 			formulaName: "mol-deacon-patrol",
-			stepsFlag:   "heartbeat:OK,inbox-check:OK,exit-after-cycle:OK",
+			stepsFlag:   "heartbeat:OK,inbox-check:OK,loop-or-exit:OK",
 			wantPrefix:  "Steps:",
 			wantSuffix:  "(3/26)",
 			wantContain: "heartbeat OK",

@@ -24,14 +24,9 @@ func TestPatrolFormulasHaveBackoffLogic(t *testing.T) {
 		awaitCmd   string // "await-signal" or "await-event"
 	}
 
-	// NOTE: mol-deacon-patrol is excluded from this regression check.
-	// Cron-spawn architecture (gt-097): the Deacon runs exactly one patrol
-	// cycle per session and exits via the `exit-after-cycle` step, so it has
-	// no await-signal / backoff logic by design. The cron cadence is provided
-	// by the daemon's recovery heartbeat re-spawning the Deacon, not by the
-	// agent waiting in-process. Witness/Refinery still use in-process loops.
 	patrolFormulas := []patrolFormula{
 		{"mol-witness-patrol.formula.toml", "loop-or-exit", "await-signal"},
+		{"mol-deacon-patrol.formula.toml", "loop-or-exit", "await-signal"},
 		{"mol-refinery-patrol.formula.toml", "burn-or-loop", "await-event"},
 	}
 
@@ -88,11 +83,9 @@ func TestPatrolFormulasHaveReportCycle(t *testing.T) {
 		loopStepID string
 	}
 
-	// Deacon uses "exit-after-cycle" (cron-spawn) instead of "loop-or-exit"
-	// (in-process loop) — see gt-097.
 	patrolFormulas := []patrolFormula{
 		{"mol-witness-patrol.formula.toml", "loop-or-exit"},
-		{"mol-deacon-patrol.formula.toml", "exit-after-cycle"},
+		{"mol-deacon-patrol.formula.toml", "loop-or-exit"},
 		{"mol-refinery-patrol.formula.toml", "burn-or-loop"},
 	}
 
@@ -282,13 +275,9 @@ func TestDeaconPatrolHasHeartbeatSteps(t *testing.T) {
 		}
 	}
 
-	// There should be a mid-cycle heartbeat step. Cron-spawn (gt-097) removed
-	// the pre-await heartbeat from the loop step (the Deacon no longer awaits
-	// in-process — it exits via `exit-after-cycle`), but the mid-cycle
-	// heartbeat is still required so long patrol cycles don't trip the
-	// daemon's stuck-deacon threshold.
+	// There should be a mid-cycle heartbeat step
 	foundMid := false
-	foundExit := false
+	foundPreAwait := false
 	for _, step := range f.Steps {
 		if step.ID == "heartbeat-mid" {
 			foundMid = true
@@ -296,29 +285,24 @@ func TestDeaconPatrolHasHeartbeatSteps(t *testing.T) {
 				t.Error("heartbeat-mid step must contain \"gt deacon heartbeat\" command")
 			}
 		}
-		if step.ID == "exit-after-cycle" {
-			foundExit = true
-			if !strings.Contains(step.Description, "gt patrol report") {
-				t.Error("exit-after-cycle step must close the cycle wisp via \"gt patrol report\"")
+		if step.ID == "loop-or-exit" && strings.Contains(step.Description, "pre-await checkpoint") {
+			foundPreAwait = true
+			if !strings.Contains(step.Description, "gt deacon heartbeat") {
+				t.Error("loop-or-exit step must refresh heartbeat before await-signal")
 			}
-			if !strings.Contains(step.Description, "gt deacon stop") {
-				t.Error("exit-after-cycle step must terminate the session via \"gt deacon stop\"")
-			}
-			// The kill must be backgrounded via nohup so the bash subprocess
-			// returns before the session dies — otherwise Claude sees the
-			// tool call as "Interrupted" and never exits cleanly. See gt-097
-			// (the follow-up after PR #4): three consecutive deacons hit this
-			// after the cron-spawn rollout because they called `gt deacon stop`
-			// synchronously.
-			if !strings.Contains(step.Description, "nohup") {
-				t.Error("exit-after-cycle step must schedule the kill via `nohup ... &` so bash returns before the session dies (gt-097)")
+			heartbeatPos := strings.Index(step.Description, "gt deacon heartbeat \"pre-await checkpoint\"")
+			awaitPos := strings.Index(step.Description, "gt mol step await-signal")
+			if heartbeatPos == -1 || awaitPos == -1 {
+				t.Error("loop-or-exit step must contain both pre-await heartbeat and await-signal commands")
+			} else if heartbeatPos > awaitPos {
+				t.Error("pre-await heartbeat must appear before await-signal to close the stale-heartbeat window")
 			}
 		}
 	}
 	if !foundMid {
 		t.Error("deacon patrol formula must have a \"heartbeat-mid\" step for mid-cycle refresh")
 	}
-	if !foundExit {
-		t.Error("deacon patrol formula must have an \"exit-after-cycle\" step (cron-spawn, gt-097)")
+	if !foundPreAwait {
+		t.Error("deacon patrol formula must refresh heartbeat again before await-signal")
 	}
 }
