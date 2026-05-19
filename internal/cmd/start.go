@@ -460,18 +460,26 @@ func startOrRestartCrewMember(t *tmux.Tmux, r *rig.Rig, crewName, townRoot strin
 		// Uses descendant process check instead of pane command check,
 		// since crew members launch via bash -c wrappers (see #1315, #1330).
 		if !t.IsAgentAlive(sessionID) {
-			// Agent has exited, restart it
-			// Build startup beacon for predecessor discovery via /resume
-			address := session.BeaconRecipient("crew", crewName, r.Name)
-			beacon := session.FormatStartupBeacon(session.BeaconConfig{
-				Recipient: address,
-				Sender:    "human",
-				Topic:     "restart",
-			})
-			agentCmd := config.BuildCrewStartupCommand(r.Name, crewName, r.Path, beacon)
+			// Agent has exited — restart it in place. This path preserves the
+			// existing tmux pane (and its scrollback), unlike crewMgr.Start
+			// which tears the session down. Reuses the same bootstrap helper so
+			// non-hook agents (codex, auggie, amp) get the same "Run gt prime"
+			// instruction + delayed work-instructions nudge as a fresh spawn
+			// (gt-biy).
+			runtimeConfig := config.ResolveWorkerAgentConfig(crewName, townRoot, r.Path)
+			bootstrap := crew.BuildStartupBootstrap(r.Name, crewName, "restart", runtimeConfig)
+			agentCmd, buildErr := config.BuildCrewStartupCommandWithAgentOverride(r.Name, crewName, r.Path, bootstrap.Beacon, "")
+			if buildErr != nil {
+				return fmt.Sprintf("  %s %s/%s restart failed: %v\n", style.Dim.Render("○"), r.Name, crewName, buildErr), false
+			}
 			if err := t.SendKeys(sessionID, agentCmd); err != nil {
 				return fmt.Sprintf("  %s %s/%s restart failed: %v\n", style.Dim.Render("○"), r.Name, crewName, err), false
 			}
+			// Deliver post-restart fallbacks for non-hook agents. Safe no-op
+			// for Claude. Trust-dialog handling is skipped here: the workspace
+			// was already trusted on first spawn, and the existing shell pane
+			// preserves codex's per-project trust state in ~/.codex/config.toml.
+			crew.DeliverStartupFallbacks(t, sessionID, bootstrap, runtimeConfig, constants.ClaudeStartTimeout)
 			return fmt.Sprintf("  %s %s/%s agent restarted\n", style.Bold.Render("✓"), r.Name, crewName), true
 		}
 		// Agent is alive — nothing to do
